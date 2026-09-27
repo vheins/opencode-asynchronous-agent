@@ -56,7 +56,29 @@ The subagent tool is named **`subagent`** in current V2 builds. Older builds nam
 
 ## Install
 
-### 1. Get the plugin
+### Option A — Install from npm (recommended)
+
+Add the published package directly:
+
+```sh
+opencode plugin add @vheins/opencode-asynchronous-agent
+```
+
+Or declare it in the top-level `plugins` array of your OpenCode config
+(`~/.config/opencode/opencode.json` for a global install):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    "@vheins/opencode-asynchronous-agent"
+  ]
+}
+```
+
+### Option B — Install from source
+
+#### 1. Get the plugin
 
 Clone this repo somewhere stable, e.g.:
 
@@ -65,7 +87,7 @@ git clone https://github.com/vheins/opencode-asynchronous-agent.git \
   ~/.config/opencode/plugins/opencode-asynchronous-agent
 ```
 
-### 2. Register it
+#### 2. Register it
 
 Add the plugin directory to the top-level `plugins` array in your OpenCode config
 (`~/.config/opencode/opencode.json` for a global install):
@@ -81,7 +103,7 @@ Add the plugin directory to the top-level `plugins` array in your OpenCode confi
 
 Use an absolute path if your OpenCode build does not expand `~`.
 
-### 3. Restart the service
+#### 3. Restart the service
 
 Plugin and config changes are picked up on restart:
 

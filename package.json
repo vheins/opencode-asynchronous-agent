@@ -1,8 +1,20 @@
 {
-  "name": "opencode-asynchronous-agent",
+  "name": "@vheins/opencode-asynchronous-agent",
   "version": "0.1.0",
   "description": "OpenCode V2 plugin that runs every subagent asynchronously (background) by default — automatic parity with the ctrl+b \"move to background\" action.",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "author": "Muhammad Rheza Alfin (vheins)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vheins/opencode-asynchronous-agent.git"
+  },
+  "homepage": "https://github.com/vheins/opencode-asynchronous-agent#readme",
+  "bugs": {
+    "url": "https://github.com/vheins/opencode-asynchronous-agent/issues"
+  },
   "main": "./server.js",
   "exports": {
     ".": "./server.js",
