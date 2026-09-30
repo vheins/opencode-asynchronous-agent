@@ -6,12 +6,16 @@
   "main": "./server.js",
   "exports": {
     ".": "./server.js",
-    "./server": "./server.js"
+    "./server": "./server.js",
+    "./tui": "./dist/tui.js"
   },
   "files": [
     "server.js",
     "index.js",
-    "src"
+    "src",
+    "dist",
+    "LICENSE-monitor",
+    "README-monitor.md"
   ],
   "keywords": [
     "opencode",
