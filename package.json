@@ -1,7 +1,7 @@
 {
-  "name": "opencode-asynchronous-agent",
-  "version": "0.1.0",
-  "description": "OpenCode V2 plugin that runs every subagent asynchronously (background) by default — automatic parity with the ctrl+b \"move to background\" action.",
+  "name": "@vheins/opencode-asynchronous-agent",
+  "version": "0.2.0",
+  "description": "OpenCode plugin (V1 + V2): runs every subagent asynchronously in the background, plus a TUI sidebar monitor with token/TPS stats and a collapsed-sidebar status bar.",
   "type": "module",
   "main": "./server.js",
   "exports": {
@@ -20,14 +20,41 @@
   "keywords": [
     "opencode",
     "opencode-plugin",
+    "opencode-v1",
     "opencode-v2",
     "subagent",
     "background",
     "async",
-    "agent"
+    "agent",
+    "tui",
+    "sidebar",
+    "statusline"
   ],
   "license": "MIT",
+  "author": "vheins",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vheins/opencode-asynchronous-agent.git"
+  },
+  "homepage": "https://github.com/vheins/opencode-asynchronous-agent#readme",
+  "bugs": {
+    "url": "https://github.com/vheins/opencode-asynchronous-agent/issues"
+  },
   "engines": {
-    "opencode": ">=2.0.0"
+    "opencode": ">=1.18.0",
+    "node": ">=22.13"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.4.0 <0.6",
+    "@opentui/solid": ">=0.4.0 <0.6",
+    "solid-js": ">=1.9.12 <2"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": { "optional": true },
+    "@opentui/solid": { "optional": true },
+    "solid-js": { "optional": true }
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
