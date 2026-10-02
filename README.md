@@ -142,6 +142,20 @@ All configuration is optional and read from environment variables at setup time.
 | `OPENCODE_AUTO_BG_DEBUG` | *(off)* | Set to `1` to log each rewrite to stderr. |
 | `OPENCODE_SUBAGENT_NOTIFY` | *(enabled)* | TUI monitor only. Set to `0`, `false`, `off`, or `no` to disable the toast shown when a background subagent finishes (`done`/`error`). |
 
+> **OpenCode V1 needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`.** V1 gates
+> background subagents behind that flag (or the broader `OPENCODE_EXPERIMENTAL=true`).
+> Export it *before* starting OpenCode — e.g. in `~/.zshrc` or `~/.bashrc`:
+>
+> ```sh
+> export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+> ```
+>
+> OpenCode V2 always supports background subagents and needs no flag. When the flag is
+> missing on V1 the plugin **degrades gracefully**: it leaves the call untouched and
+> subagents run in the foreground, instead of failing with
+> `Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`.
+> A one-line hint is logged to stderr at startup.
+
 ### Examples
 
 Only let the `orchestrator` parent fan out into background subagents:
@@ -185,6 +199,10 @@ export OPENCODE_AUTO_BG_SUBAGENT=0
   or `error`, the TUI monitor shows a short toast. It is a display-only surface — it
   never injects session parts or prompts, so it cannot affect the parent agent's loop.
   Disable with `OPENCODE_SUBAGENT_NOTIFY=0`.
+- **V1 flag-aware.** On OpenCode V1 the plugin only injects `background: true` when
+  `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` (or `OPENCODE_EXPERIMENTAL`) is enabled,
+  so a missing flag never turns a subagent call into a hard error. On V2 the flag is
+  not required.
 
 ---
 

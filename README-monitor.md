@@ -231,6 +231,20 @@ OpenCode may be using a cached package. Try clearing the cached package director
 
 Then restart OpenCode.
 
+### Subagents run in the foreground (or fail with "Background subagents require …")
+
+On OpenCode **V1**, background subagents are gated behind
+`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` (or `OPENCODE_EXPERIMENTAL=true`).
+Export it *before* starting OpenCode, then restart:
+
+```sh
+export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+```
+
+Recent plugin versions degrade gracefully when the flag is missing: subagents simply
+run in the foreground instead of failing. If you still see the hard error, you are on
+an older plugin version — upgrade and restart OpenCode.
+
 ### Token/context usage is missing
 
 OpenCode event payloads can vary by version and by event type. The plugin shows token/context usage when it is available and safely omits it when it is not.

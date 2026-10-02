@@ -69,7 +69,37 @@ function isObject(value) {
 
 const debugEnabled = () => String(process.env.OPENCODE_AUTO_BG_DEBUG ?? "") === "1"
 
-/** Apply `background: true` to a subagent tool call. Shared by the V1 and V2 hooks. */
+/**
+ * Values OpenCode (Effect `Config.boolean`) accepts as a boolean, case-sensitive.
+ * Anything else makes the flag parse fail and fall back to its default (`false`).
+ */
+const TRUE_VALUES = new Set(["true", "yes", "on", "1", "y"])
+const FALSE_VALUES = new Set(["false", "no", "off", "0", "n"])
+
+/**
+ * Whether the running OpenCode build allows `background: true` on a subagent
+ * tool call.
+ *
+ * OpenCode V2 always supports it. OpenCode V1 gates it behind
+ * `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, falling back to
+ * `OPENCODE_EXPERIMENTAL` when the former is unset/unparseable. Injecting the
+ * flag without support makes the whole subagent call fail with
+ * "Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true",
+ * so we must not inject it unless it is enabled.
+ */
+function backgroundSupported() {
+  const direct = String(process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS ?? "")
+  if (TRUE_VALUES.has(direct)) return true
+  if (FALSE_VALUES.has(direct)) return false
+  return TRUE_VALUES.has(String(process.env.OPENCODE_EXPERIMENTAL ?? ""))
+}
+
+/**
+ * Apply `background: true` to a subagent tool call. Shared by the V1 and V2
+ * hooks. V2 always supports background subagents; the V1 entry point refuses to
+ * register this hook at all when its experimental flag is missing, so no flag
+ * check is needed here.
+ */
 function backgroundSubagent(tool, args, parentAgent, sessionID, debug) {
   if (!SUBAGENT_TOOLS.has(tool)) return
   if (!isObject(args)) return
@@ -98,8 +128,22 @@ export async function autoBackgroundPluginV1(ctx) {
   if (isDisabled()) return {}
 
   const directory = ctx?.directory ?? process.cwd()
+  const supported = backgroundSupported()
   if (debugEnabled()) {
-    console.error(`[opencode-asynchronous-agent] V1 hook active (dir=${directory})`)
+    console.error(
+      `[opencode-asynchronous-agent] V1 hook active (dir=${directory}, ` +
+        `backgroundSupported=${supported})`,
+    )
+  }
+
+  if (!supported) {
+    console.error(
+      "[opencode-asynchronous-agent] background subagents are disabled by this " +
+        "OpenCode build: set OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true " +
+        "(or OPENCODE_EXPERIMENTAL=true) before starting OpenCode to enable them. " +
+        "Subagents will run in the foreground until then.",
+    )
+    return {}
   }
 
   return {
