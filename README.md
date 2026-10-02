@@ -12,7 +12,7 @@ Works on **both** OpenCode V1 (`>=1.18.0`) and V2 (`>=2.0.0`):
   sidebar is collapsed
 
 ```
-▼ Subagents 0.3.0
+▼ Subagents 0.3.1
 ● 1 run · ✓ 0 done · ✕ 0 err · Σ 1
  [ ] Write a single short para…
     ↳  00:07  48.0k tok  16.3 t/s

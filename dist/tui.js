@@ -10,8 +10,8 @@ import { setProp as _$setProp } from "@opentui/solid";
 import { createElement as _$createElement } from "@opentui/solid";
 import { useKeyboard } from "@opentui/solid";
 import { useTerminalDimensions } from "@opentui/solid";
-import { execFileSync } from "child_process";
-import { appendFileSync, existsSync, mkdirSync, readdirSync } from "fs";
+import { execFile } from "child_process";
+import { appendFileSync, mkdirSync } from "fs";
 import { createRequire } from "module";
 import os2 from "os";
 import { dirname as dirname2, join as join2 } from "path";
@@ -318,7 +318,7 @@ function timestampMillisFromUnknown(value) {
 
 // src/state.ts
 import { randomUUID } from "crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "fs/promises";
 import { basename, dirname, join } from "path";
 import os from "os";
 
@@ -1524,21 +1524,13 @@ function applySubagentEvent(state, event) {
 }
 
 // src/logs.ts
-import { readFileSync, statSync } from "fs";
-var MAX_SYNC_LOG_READ_BYTES = 1024 * 1024;
-function safeRead(reader) {
-  try {
-    return reader();
-  } catch {
+var MAX_LOG_READ_BYTES = 1024 * 1024;
+async function readOpenCodeLogFileIfSmall(path) {
+  const stats = await safeReadAsync(() => stat(path));
+  if (!stats?.isFile() || stats.size > MAX_LOG_READ_BYTES) {
     return void 0;
   }
-}
-function readOpenCodeLogFileIfSmall(path) {
-  const stats = safeRead(() => statSync(path));
-  if (!stats?.isFile() || stats.size > MAX_SYNC_LOG_READ_BYTES) {
-    return void 0;
-  }
-  return safeRead(() => readFileSync(path, "utf8"));
+  return safeReadAsync(() => readFile(path, "utf8"));
 }
 
 // src/render.ts
@@ -2123,10 +2115,19 @@ function resolveOpenCodeDbPath() {
 function escapeSqlString(value) {
   return value.replace(/'/g, "''");
 }
-function readDoneTokensFromOpenCodeDb(sessionID) {
+function execFileP(file, args, options) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, options, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(stdout);
+    });
+  });
+}
+
+async function readDoneTokensFromOpenCodeDb(sessionID) {
   const dbPath = resolveOpenCodeDbPath();
-  if (!existsSync(dbPath)) return void 0;
-  const output = safeRead2(() => execFileSync("sqlite3", [dbPath, `select data from message where session_id='${escapeSqlString(sessionID)}' order by time_created desc limit 50;`], {
+  if (!(await safeReadAsync(() => stat(dbPath)))?.isFile()) return void 0;
+  const output = await safeReadAsync(() => execFileP("sqlite3", [dbPath, `select data from message where session_id='${escapeSqlString(sessionID)}' order by time_created desc limit 50;`], {
     encoding: "utf8",
     timeout: 1e3,
     maxBuffer: 1024 * 1024
@@ -2140,15 +2141,15 @@ function readDoneTokensFromOpenCodeDb(sessionID) {
   }
   return tokens;
 }
-function readDoneTokensFromOpenCodeLogs(sessionID) {
+async function readDoneTokensFromOpenCodeLogs(sessionID) {
   const logDir = join2(resolveOpenCodeDataDir(), "log");
-  if (!existsSync(logDir)) return void 0;
-  const files = safeRead2(() => readdirSync(logDir).filter((file) => file.endsWith(".log")).sort().reverse().slice(0, 8));
+  if (!(await safeReadAsync(() => stat(logDir)))?.isDirectory()) return void 0;
+  const files = await safeReadAsync(async () => (await readdir(logDir)).filter((file) => file.endsWith(".log")).sort().reverse().slice(0, 8));
   if (!files) return void 0;
   const tokenPattern = /"tokens"\s*:\s*(\{[^\n]*?\})/g;
   let tokens;
   for (const file of files) {
-    const contents = readOpenCodeLogFileIfSmall(join2(logDir, file));
+    const contents = await readOpenCodeLogFileIfSmall(join2(logDir, file));
     if (!contents || !contents.includes(sessionID)) continue;
     for (const line of contents.split("\n")) {
       if (!line.includes(sessionID) || !line.includes('"tokens"')) continue;
@@ -2161,7 +2162,7 @@ function readDoneTokensFromOpenCodeLogs(sessionID) {
   }
   return tokens;
 }
-function rehydrateDoneChildTokens(child) {
+async function rehydrateDoneChildTokens(child) {
   if (child.status !== "done") return void 0;
   if (hasTokenTotal(child.tokens)) return void 0;
   if (!child.id.startsWith("ses_")) return void 0;
@@ -2174,7 +2175,7 @@ function rehydrateDoneChildTokens(child) {
   if (cached && nowMs - cached.checkedAtMs < DONE_TOKEN_REHYDRATE_THROTTLE_MS) {
     return void 0;
   }
-  const tokens = readDoneTokensFromOpenCodeDb(child.id) ?? readDoneTokensFromOpenCodeLogs(child.id);
+  const tokens = (await readDoneTokensFromOpenCodeDb(child.id)) ?? (await readDoneTokensFromOpenCodeLogs(child.id));
   doneTokenCache.set(child.id, {
     attempts: (cached?.attempts ?? 0) + 1,
     checkedAtMs: nowMs,
@@ -2217,7 +2218,7 @@ function pushSessionCandidates(api, sessionID, candidates) {
     if (parts) candidates.push(parts);
   }
 }
-function hydrateChildTokensFromTuiState(api, child) {
+async function hydrateChildTokensFromTuiState(api, child) {
   const candidates = [];
   pushSessionCandidates(api, child.id, candidates);
   if (child.messageID) {
@@ -2231,14 +2232,14 @@ function hydrateChildTokensFromTuiState(api, child) {
   for (const candidate of candidates) {
     tokens = mergeTokenState(tokens, extractChildDetails(candidate).tokens);
   }
-  tokens = mergeTokenState(tokens, rehydrateDoneChildTokens(child));
+  tokens = mergeTokenState(tokens, await rehydrateDoneChildTokens(child));
   return tokens;
 }
-function hydrateStateTokensFromTuiState(api, state) {
+async function hydrateStateTokensFromTuiState(api, state) {
   let changed = false;
   for (const child of Object.values(state.children)) {
     if (child.status !== "running" && hasTokenTotal(child.tokens)) continue;
-    const hydrated = hydrateChildTokensFromTuiState(api, child);
+    const hydrated = await hydrateChildTokensFromTuiState(api, child);
     const nextTokens = mergeTokenState(child.tokens, hydrated);
     if (!sameTokens2(child.tokens, nextTokens)) {
       child.tokens = nextTokens;
@@ -2280,15 +2281,44 @@ function refreshLiveState(state) {
   }
   return false;
 }
-function runTuiStateMaintenance(api, current) {
+async function runTuiStateMaintenance(api, current) {
   const next = cloneState(current);
-  const hydrated = hydrateStateTokensFromTuiState(api, next);
+  const hydrated = await hydrateStateTokensFromTuiState(api, next);
   const refreshed = refreshLiveState(next);
   return hydrated || refreshed ? next : current;
 }
 function createTuiMaintenanceTimers(input) {
+  const intervalMs = input.maintenanceIntervalMs ?? MAINTENANCE_TICK_MS;
   let elapsedTimer;
-  const maintenanceTimer = setInterval(input.onMaintenanceTick, MAINTENANCE_TICK_MS);
+  let maintenanceTimer;
+  let maintenanceRunning = false;
+  let maintenanceRerun = false;
+  let disposed = false;
+  const scheduleMaintenance = (delayMs) => {
+    if (disposed || maintenanceTimer) return;
+    maintenanceTimer = setTimeout(async () => {
+      maintenanceTimer = void 0;
+      if (disposed) return;
+      if (maintenanceRunning) {
+        maintenanceRerun = true;
+        return;
+      }
+      maintenanceRunning = true;
+      let more = false;
+      try {
+        more = await input.onMaintenanceTick();
+      } catch {
+        more = false;
+      }
+      maintenanceRunning = false;
+      if (disposed) return;
+      if (more || maintenanceRerun) {
+        maintenanceRerun = false;
+        scheduleMaintenance(intervalMs);
+      }
+    }, delayMs);
+  };
+  if (input.onMaintenanceTick) scheduleMaintenance(intervalMs);
   return {
     syncElapsedTimer(hasRunningChild) {
       if (hasRunningChild && !elapsedTimer) {
@@ -2298,10 +2328,16 @@ function createTuiMaintenanceTimers(input) {
         elapsedTimer = void 0;
       }
     },
+    requestMaintenance(delayMs = 0) {
+      if (disposed || maintenanceRunning || maintenanceTimer) return;
+      scheduleMaintenance(delayMs);
+    },
     dispose() {
-      if (elapsedTimer) clearInterval(elapsedTimer);
-      clearInterval(maintenanceTimer);
+      disposed = true;
+      clearInterval(elapsedTimer);
+      clearTimeout(maintenanceTimer);
       elapsedTimer = void 0;
+      maintenanceTimer = void 0;
     }
   };
 }
@@ -4122,27 +4158,42 @@ function initializeTui(api, disposeRoot) {
       reconcileInFlight = false;
     }
   };
+  const hasMaintenanceWork = () => Object.values(state().children).some((child) => child.status === "running" || child.status === "done" && child.id.startsWith("ses_") && !hasTokenTotal(child.tokens) && (doneTokenCache.get(child.id)?.attempts ?? 0) < DONE_TOKEN_REHYDRATE_MAX_ATTEMPTS);
   const timers = createTuiMaintenanceTimers({
     onElapsedTick: () => {
       snapshotSidebarScrollOffsets();
       setNowMs(Date.now());
-    },
-    onMaintenanceTick: () => {
       const currentNowMs = Date.now();
       if (currentNowMs - lastRunningReconcileAtMs >= RUNNING_RECONCILE_MAINTENANCE_INTERVAL_MS) {
         void reconcileRunningChildren();
       }
+    },
+    onMaintenanceTick: async () => {
+      const snapshot = cloneState(state());
+      const hydrated = await hydrateStateTokensFromTuiState(api, snapshot);
+      if (disposed) return false;
+      snapshotSidebarScrollOffsets();
       setState((current) => {
-        const next = runTuiStateMaintenance(api, current);
-        if (next === current) return current;
-        snapshotSidebarScrollOffsets();
+        const next = cloneState(current);
+        for (const [id, child] of Object.entries(snapshot.children)) {
+          const target = next.children[id];
+          if (!target) continue;
+          if (!sameTokens2(target.tokens, child.tokens)) {
+            target.tokens = child.tokens;
+            target.updatedAt = child.updatedAt;
+          }
+        }
+        const refreshed = refreshLiveState(next);
+        if (!hydrated && !refreshed) return current;
         persistStateSnapshot(statePath, textPath, next);
         return next;
       });
+      return hasMaintenanceWork();
     }
   });
   createEffect(() => {
     timers.syncElapsedTimer(Object.values(state().children).some((child) => child.status === "running"));
+    if (hasMaintenanceWork()) timers.requestMaintenance();
   });
   // >>> patch: toast notification when a subagent completes or fails
   const NOTIFY_DONE_ENABLED = (() => {
@@ -4184,7 +4235,6 @@ function initializeTui(api, disposeRoot) {
     setState((current) => {
       const next = cloneState(current);
       const changed = applySubagentEvent(next, event);
-      const hydrated = hydrateStateTokensFromTuiState(api, next);
       if (changed) {
         debugLog({
           kind: "state.changed",
@@ -4198,7 +4248,7 @@ function initializeTui(api, disposeRoot) {
         });
       }
       const refreshed = refreshLiveState(next);
-      if (!changed && !hydrated && !refreshed) return current;
+      if (!changed && !refreshed) return current;
       persistStateSnapshot(statePath, textPath, next);
       return next;
     });
