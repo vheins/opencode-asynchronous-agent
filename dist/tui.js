@@ -4144,6 +4144,40 @@ function initializeTui(api, disposeRoot) {
   createEffect(() => {
     timers.syncElapsedTimer(Object.values(state().children).some((child) => child.status === "running"));
   });
+  // >>> patch: toast notification when a subagent completes or fails
+  const NOTIFY_DONE_ENABLED = (() => {
+    const raw = String((typeof process !== "undefined" && process.env ? process.env.OPENCODE_SUBAGENT_NOTIFY : void 0) ?? "1").trim().toLowerCase();
+    return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+  })();
+  if (NOTIFY_DONE_ENABLED && api?.ui?.toast) {
+    const notifiedStatus = /* @__PURE__ */ new Map();
+    let notifySeeded = false;
+    createEffect(() => {
+      const children = state().children;
+      if (!notifySeeded) {
+        for (const child of Object.values(children)) notifiedStatus.set(child.id, child.status);
+        notifySeeded = true;
+        return;
+      }
+      for (const child of Object.values(children)) {
+        const previous = notifiedStatus.get(child.id);
+        notifiedStatus.set(child.id, child.status);
+        if (previous === child.status) continue;
+        if (child.status !== "done" && child.status !== "error") continue;
+        const label = String(child.title || child.agentName || "subagent").replace(/\s+/g, " ").trim().slice(0, 60);
+        const ok = child.status === "done";
+        try {
+          api.ui.toast({
+            variant: ok ? "success" : "error",
+            message: ok ? `Subagent done: ${label}` : `Subagent failed: ${label}`,
+            duration: ok ? 4e3 : 6e3
+          });
+        } catch {
+        }
+      }
+    });
+  }
+  // <<< patch: toast notification when a subagent completes or fails
   const applyEvent = (event) => {
     debugEvent(event);
     snapshotSidebarScrollOffsets();
