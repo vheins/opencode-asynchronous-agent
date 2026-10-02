@@ -1932,10 +1932,9 @@ var SUBAGENTS_SECTION_ENABLED_KV_KEY = "subagents.sidebar.enabled";
 var SUBAGENTS_MAX_VISIBLE_ROWS = 5;
 var SUBAGENTS_RUNNING_ROW_HEIGHT = 3;
 var SUBAGENTS_TERMINAL_ROW_HEIGHT = 2;
-var SUBAGENTS_MODEL_ROW_HEIGHT = 1;
 var SUBAGENTS_ROW_GAP = 0;
 var SUBAGENTS_ROW_MARKER_WIDTH = 4;
-var SUBAGENTS_MAX_LIST_HEIGHT = SUBAGENTS_MAX_VISIBLE_ROWS * (SUBAGENTS_RUNNING_ROW_HEIGHT + SUBAGENTS_MODEL_ROW_HEIGHT) + (SUBAGENTS_MAX_VISIBLE_ROWS - 1) * SUBAGENTS_ROW_GAP;
+var SUBAGENTS_MAX_LIST_HEIGHT = SUBAGENTS_MAX_VISIBLE_ROWS * SUBAGENTS_RUNNING_ROW_HEIGHT + (SUBAGENTS_MAX_VISIBLE_ROWS - 1) * SUBAGENTS_ROW_GAP;
 var INACTIVE_SUBAGENT_OPACITY = 0.65;
 var packageRequire = createRequire(import.meta.url);
 function readPluginVersion() {
@@ -2443,6 +2442,12 @@ function splitParentheticalTitle(title) {
   };
 }
 function childParenthetical(child) {
+  const model = child.model;
+  if (model?.modelID?.trim()) {
+    const name = model.modelID.trim();
+    const variant = model.variant?.trim();
+    return variant ? `(${name} \xB7 ${variant})` : `(${name})`;
+  }
   if (child.agentName?.trim()) return `(${child.agentName.trim()})`;
   const primary = splitParentheticalTitle(childPrimaryText(child));
   if (primary.parenthetical) return primary.parenthetical;
@@ -2458,8 +2463,13 @@ function formatSecondaryLine(continuation, parenthetical, width) {
   }
   return ellipsize(parenthetical, width);
 }
+function isGenericChildTitle(title) {
+  return /^(task|subtask|subagent|delegate)$/i.test(title.trim());
+}
 function childPrimaryText(child) {
-  return child.summary?.trim() || child.title;
+  const title = child.title?.trim();
+  if (title && !isGenericChildTitle(title)) return title;
+  return child.summary?.trim() || title || "";
 }
 function resolveTokenTotal2(child) {
   const total = child.tokens?.total;
@@ -2532,26 +2542,15 @@ function formatChildRowLine(input) {
   const width = Math.max(MIN_ROW_WIDTH, rowWidthBudget(input.sidebarWidth) - (input.reservedWidth ?? 0));
   const title = splitParentheticalTitle(childPrimaryText(input.child));
   const parenthetical = childParenthetical(input.child);
-  for (const meta of contextVariants(input.child)) {
-    const detailChars = 2 + textColumns(elapsed) + (meta ? 3 + textColumns(meta) : 0);
-    const labelBudget = Math.min(width - 2, width - Math.max(0, detailChars - width));
-    if (labelBudget >= MIN_LABEL_WIDTH || textColumns(meta) === 0) {
-      const labelLines2 = wrapCompactText(title.label, Math.max(1, labelBudget), 2);
-      return {
-        labelLines: labelLines2,
-        secondaryLine: formatSecondaryLine(labelLines2[1], parenthetical, Math.max(1, labelBudget)),
-        elapsed,
-        meta,
-        tps: formatTokensPerSecond(input.child, input.nowMs)
-      };
-    }
-  }
-  const labelLines = wrapCompactText(title.label, MIN_LABEL_WIDTH, 2);
+  const budget = Math.max(MIN_LABEL_WIDTH, width - 2);
+  const combined = parenthetical ? `${title.label} ${parenthetical}` : title.label;
+  const single = textColumns(combined) <= budget;
+  const labelLines = wrapCompactText(single ? combined : title.label, budget, single ? 1 : 2);
   return {
     labelLines,
-    secondaryLine: formatSecondaryLine(labelLines[1], parenthetical, MIN_LABEL_WIDTH),
+    secondaryLine: single ? void 0 : formatSecondaryLine(labelLines[1], parenthetical, budget),
     elapsed,
-    meta: "",
+    meta: contextVariants(input.child).find((variant) => variant.length > 0) ?? "",
     tps: formatTokensPerSecond(input.child, input.nowMs)
   };
 }
@@ -2570,12 +2569,9 @@ function formatTerminalChildRowLine(input) {
   };
 }
 function subagentRowHeight(input) {
-  const modelHeight = input.child.model?.variant ? SUBAGENTS_MODEL_ROW_HEIGHT : 0;
-  if (input.child.status !== "running") {
-    return SUBAGENTS_TERMINAL_ROW_HEIGHT + modelHeight;
-  }
+  if (input.child.status !== "running") return SUBAGENTS_TERMINAL_ROW_HEIGHT;
   const line = formatChildRowLine(input);
-  return (line.secondaryLine ? SUBAGENTS_RUNNING_ROW_HEIGHT : SUBAGENTS_RUNNING_ROW_HEIGHT - 1) + modelHeight;
+  return line.secondaryLine ? SUBAGENTS_RUNNING_ROW_HEIGHT : SUBAGENTS_RUNNING_ROW_HEIGHT - 1;
 }
 function formatChildModelLine(child, providers, width) {
   if (!child.model?.variant) return void 0;
@@ -2952,11 +2948,6 @@ function SidebarSubagents(props) {
         reservedWidth: SUBAGENTS_ROW_MARKER_WIDTH
       });
     });
-    const modelLine = createMemo(() => {
-      const currentChild = child();
-      if (!currentChild) return void 0;
-      return formatChildModelLine(currentChild, props.api.state.provider, rowWidthBudget(props.sidebarWidth?.()) - SUBAGENTS_ROW_MARKER_WIDTH);
-    });
     const activate = () => {
       const target = targetSessionID();
       if (target) {
@@ -3004,17 +2995,6 @@ function SidebarSubagents(props) {
             _$insert(_el$11, () => taskStatusMarker(status()));
             _$insert(_el$12, () => ` ${terminalLine().label}`);
             _$insert(_el$13, () => `    \u21B3 ${CLOCK_ICON} ${terminalLine().meta}`);
-            _$insert(_el$0, _$createComponent(Show, {
-              get when() {
-                return modelLine();
-              },
-              children: (metadata) => (() => {
-                var _el$14 = _$createElement("text");
-                _$insert(_el$14, () => `    ${metadata()}`);
-                _$effect((_$p) => _$setProp(_el$14, "fg", props.theme.textMuted, _$p));
-                return _el$14;
-              })()
-            }), null);
             _$effect((_p$) => {
               var _v$13 = selected() ? props.theme.accent : props.theme.textMuted, _v$14 = statusColor2(status(), props.theme), _v$15 = selected() ? props.theme.text : muted() ? props.theme.textMuted : props.theme.text, _v$16 = emphasized() ? props.theme.text : props.theme.textMuted;
               _v$13 !== _p$.e && (_p$.e = _$setProp(_el$10, "fg", _v$13, _p$.e));
@@ -3079,17 +3059,6 @@ function SidebarSubagents(props) {
               _$effect((_$p) => _$setProp(_el$tps, "fg", emphasized() ? props.theme.text : props.theme.textMuted, _$p));
               return _el$tps;
             }
-          }), null);
-          _$insert(_el$2, _$createComponent(Show, {
-            get when() {
-              return modelLine();
-            },
-            children: (metadata) => (() => {
-              var _el$16 = _$createElement("text");
-              _$insert(_el$16, () => `    ${metadata()}`);
-              _$effect((_$p) => _$setProp(_el$16, "fg", props.theme.textMuted, _$p));
-              return _el$16;
-            })()
           }), null);
           _$effect((_p$) => {
             var _v$ = selected() ? props.theme.accent : props.theme.textMuted, _v$2 = statusColor2(status(), props.theme), _v$3 = selected() ? props.theme.text : muted() ? props.theme.textMuted : props.theme.text, _v$4 = emphasized() ? props.theme.text : props.theme.textMuted;

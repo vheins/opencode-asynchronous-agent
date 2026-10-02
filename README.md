@@ -12,11 +12,10 @@ Works on **both** OpenCode V1 (`>=1.18.0`) and V2 (`>=2.0.0`):
   sidebar is collapsed
 
 ```
-▼ Subagents 0.3.1
+▼ Subagents 0.3.3
 ● 1 run · ✓ 0 done · ✕ 0 err · Σ 1
- [ ] Write a single short para…
+ [ ] Write a single short para… (executor · high)
     ↳  00:07  48.0k tok  16.3 t/s
-    executor · high
 ```
 
 OpenCode V2 ships a keybind (`ctrl+b`, command `session.background`) that moves a
