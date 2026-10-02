@@ -1,7 +1,23 @@
-# opencode-asynchronous-agent
+# @vheins/opencode-asynchronous-agent
 
-An [OpenCode](https://opencode.ai) **V2** plugin that makes every subagent call run
-**asynchronously in the background** — automatically.
+An [OpenCode](https://opencode.ai) plugin that makes every subagent call run
+**asynchronously in the background** — automatically — **plus a TUI sidebar
+monitor** for those background subagents.
+
+Works on **both** OpenCode V1 (`>=1.18.0`) and V2 (`>=2.0.0`):
+
+- **`./server`** — the tool hook that forces `background = true`
+- **`./tui`** — the sidebar monitor: running/done/error counts, per-subagent
+  elapsed time, **total tokens + tokens/sec**, and a status-bar line when the
+  sidebar is collapsed
+
+```
+▼ Subagents 0.1.0
+● 1 run · ✓ 0 done · ✕ 0 err · Σ 1
+ [ ] Write a single short para…
+    ↳  00:07  48.0k tok  16.3 t/s
+    executor · high
+```
 
 OpenCode V2 ships a keybind (`ctrl+b`, command `session.background`) that moves a
 *running* foreground subagent into background observation. This plugin gives you the
@@ -56,29 +72,27 @@ The subagent tool is named **`subagent`** in current V2 builds. Older builds nam
 
 ## Install
 
-### Option A — Install from npm (recommended)
-
-Add the published package directly:
+### From npm (recommended)
 
 ```sh
-opencode plugin add @vheins/opencode-asynchronous-agent
+opencode plugin @vheins/opencode-asynchronous-agent --global
 ```
 
-Or declare it in the top-level `plugins` array of your OpenCode config
-(`~/.config/opencode/opencode.json` for a global install):
+That installs the **server** hook (subagents run in the background). For the
+**TUI monitor**, add the same package to `~/.config/opencode/tui.json` as well:
 
 ```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    "@vheins/opencode-asynchronous-agent"
-  ]
-}
+// opencode.json — server hook (V1 uses `plugin`; V2 uses `plugins`)
+{ "plugin": ["@vheins/opencode-asynchronous-agent"] }
+
+// tui.json — TUI monitor (V1 TUI config; V1 does not read cli.json)
+{ "$schema": "https://opencode.ai/tui.json", "plugin": ["@vheins/opencode-asynchronous-agent"] }
 ```
 
-### Option B — Install from source
+One package, two entrypoints: the loader resolves `./server` for the server
+config and `./tui` for the TUI config (a single module may not export both).
 
-#### 1. Get the plugin
+### From a local checkout
 
 Clone this repo somewhere stable, e.g.:
 
@@ -87,7 +101,7 @@ git clone https://github.com/vheins/opencode-asynchronous-agent.git \
   ~/.config/opencode/plugins/opencode-asynchronous-agent
 ```
 
-#### 2. Register it
+### 2. Register it
 
 Add the plugin directory to the top-level `plugins` array in your OpenCode config
 (`~/.config/opencode/opencode.json` for a global install):
@@ -103,7 +117,7 @@ Add the plugin directory to the top-level `plugins` array in your OpenCode confi
 
 Use an absolute path if your OpenCode build does not expand `~`.
 
-#### 3. Restart the service
+### 3. Restart the service
 
 Plugin and config changes are picked up on restart:
 
