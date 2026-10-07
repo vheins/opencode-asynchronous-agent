@@ -1,4 +1,4 @@
-import type { TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
+import type { TuiPluginApi, TuiPluginModule, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type Accessor, type JSX } from "solid-js"
@@ -203,6 +203,25 @@ function useCreatureAnimation(working: Accessor<boolean>) {
 
 type SubagentStatus = "running" | "done" | "error"
 
+/** Async status kinds sharing one theme-driven color mapping (aggregate line + rows). */
+type StatusKind = "run" | "done" | "err" | "total"
+
+/** Resolves a status kind to an active-theme token; never a literal color. */
+function statusColor(theme: TuiThemeCurrent, kind: StatusKind) {
+  if (kind === "run") return theme.accent
+  if (kind === "done") return theme.success
+  if (kind === "err") return theme.error
+  return theme.textMuted
+}
+
+/** Maps an activity status label to its status kind, if it is one. */
+function activityKind(status: string | undefined): StatusKind | undefined {
+  if (status === "Running" || status === "Queued" || status === "Launched") return "run"
+  if (status === "Done") return "done"
+  if (status === "Failed") return "err"
+  return undefined
+}
+
 /**
  * Derives the async-agent aggregate (running/done/error/total). Reconciles the
  * parent session's task/subagent tool parts with the live sidebarActivity agents:
@@ -354,7 +373,7 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
     <Show when={props.agent.target}><text fg={theme().text} wrapMode="word">{props.agent.target}</text></Show>
     <Show when={error()}><text fg={theme().warning}>{error()}</text></Show>
     <Show when={data()}>{(detail) => <box gap={1}>
-      <text fg={theme().text} wrapMode="word">{detail().activity ? `${detail().current ? "Now" : "Last"} · ${detail().activity!.action} · ${detail().activity!.status}` : "Tool activity not reported yet."}</text>
+      <text fg={theme().text} wrapMode="word">{detail().activity ? `${detail().current ? "Now" : "Last"} · ${detail().activity!.action} · ` : "Tool activity not reported yet."}<Show when={detail().activity}>{(activity) => <span style={{ fg: statusColor(theme(), activityKind(activity().status) ?? "total") }}>{activity().status}</span>}</Show></text>
       <Show when={detail().activity?.target}><text fg={theme().textMuted} wrapMode="char">{detail().activity?.target}</text></Show>
       <text fg={theme().textMuted}>{detail().todos.length ? `${detail().completed}/${detail().todos.length} tasks done` : "Task progress not reported yet."}</text>
       <For each={detail().todos}>{(todo) => <text fg={todo.status === "in_progress" ? theme().text : theme().textMuted} wrapMode="word">{todo.status === "completed" ? "✓" : todo.status === "in_progress" ? "›" : "·"} {todo.content}</text>}</For>
@@ -462,8 +481,16 @@ export function AsyncIdentity(props: { api: TuiPluginApi; id: string; compact?: 
   const theme = () => props.api.theme.current
   const data = createMemo(() => asyncIdentity(props.api, props.id))
   return <box backgroundColor={theme().backgroundElement} paddingLeft={1} paddingRight={1}>
-    <text fg={theme().primary}><b>Subagents {data().total}</b></text>
-    <text fg={theme().text}>● {data().running} run · ✓ {data().done} done · ✕ {data().error} err · Σ {data().total}</text>
+    <text fg={theme().primary}><b>Subagents · {data().total} runs</b></text>
+    <text wrapMode="none">
+      <span style={{ fg: statusColor(theme(), "run") }}>● {data().running} run</span>
+      <span style={{ fg: theme().textMuted }}> · </span>
+      <span style={{ fg: statusColor(theme(), "done") }}>✓ {data().done} done</span>
+      <span style={{ fg: theme().textMuted }}> · </span>
+      <span style={{ fg: statusColor(theme(), "err") }}>✕ {data().error} err</span>
+      <span style={{ fg: theme().textMuted }}> · </span>
+      <span style={{ fg: statusColor(theme(), "total") }}>Σ {data().total}</span>
+    </text>
   </box>
 }
 

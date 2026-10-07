@@ -16,16 +16,18 @@ Works on **both** OpenCode V1 (`>=1.18.0`) and V2 (`>=2.0.0`):
   sidebar is collapsed.
 
 ```
-Subagents 3
+Subagents · 3 runs
 ● 1 run · ✓ 1 done · ✕ 1 err · Σ 3
 ```
 
-The sidebar renders a collapsible InfoCard stack. The `Subagents N` aggregate is
+The sidebar renders a collapsible InfoCard stack. The `Subagents · N runs` aggregate is
 rendered exactly once; each subagent appears as a single card (not a row plus a
 card) showing its session title, activity, todo, elapsed time, tool-call count,
 context used with percent of the model limit, and output Tok/s.
 Clicking a subagent card navigates to that subagent's session. The `app_bottom`
-line mirrors the aggregate when the sidebar is collapsed.
+line mirrors the aggregate when the sidebar is collapsed. Status segments are
+color-coded from the active theme: run (`accent`), done (`success`), err
+(`error`), total (`textMuted`).
 
 OpenCode V2 ships a keybind (`ctrl+b`, command `session.background`) that moves a
 *running* foreground subagent into background observation. This plugin gives you the
