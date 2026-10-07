@@ -9,7 +9,8 @@ Works on **both** OpenCode V1 (`>=1.18.0`) and V2 (`>=2.0.0`):
 - **`./server`** — the tool hook that forces `background = true`
 - **`./tui`** — the sidebar monitor: a Saffteen-style collapsible InfoCard stack
   (activity/result, provider token report, task progress, workspace) plus
-  per-subagent cards (activity, todo, model, duration). The async-agent identity
+  per-subagent cards (title, activity, todo, elapsed time, Tools count, context
+  used with percent, and Tok/s). The async-agent identity
   is preserved: running/done/error/total counts, per-subagent elapsed time,
   **total tokens + tokens/sec**, and a compact one-line status bar when the
   sidebar is collapsed.
@@ -21,7 +22,8 @@ Subagents 3
 
 The sidebar renders a collapsible InfoCard stack. The `Subagents N` aggregate is
 rendered exactly once; each subagent appears as a single card (not a row plus a
-card) showing its activity, todo, model, elapsed time, tokens, and tokens/sec.
+card) showing its session title, activity, todo, elapsed time, tool-call count,
+context used with percent of the model limit, and output Tok/s.
 Clicking a subagent card navigates to that subagent's session. The `app_bottom`
 line mirrors the aggregate when the sidebar is collapsed.
 

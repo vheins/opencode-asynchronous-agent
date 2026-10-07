@@ -2,18 +2,41 @@ import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { Message, Part, Session, Todo } from "@opencode-ai/sdk/v2"
 import { activityDetail } from "./model"
 
-export function subagentDetails(session: Session | undefined, messages: { info: Message; parts: Part[] }[], todos: Todo[]) {
-  const assistant = [...messages].reverse().find((entry) => entry.info.role === "assistant")?.info
+/** Latest assistant message in a child transcript, if any. */
+function latestAssistant(messages: ReadonlyArray<Message>) {
+  return [...messages].reverse().find((message) => message.role === "assistant")
+}
+
+/** Provider/model of a child's latest assistant message, falling back to its session model. */
+export function subagentModel(session: Session | undefined, messages: ReadonlyArray<Message>) {
+  const assistant = latestAssistant(messages)
+  const providerID = assistant?.providerID ?? session?.model?.providerID
+  const modelID = assistant?.modelID ?? session?.model?.id
+  return { providerID, modelID }
+}
+
+export function subagentDetails(session: Session | undefined, messages: { info: Message; parts: Part[] }[], todos: Todo[], limit?: number) {
+  const infos = messages.map((entry) => entry.info)
+  const assistant = latestAssistant(infos)
   const tools = messages.flatMap((entry) => entry.parts.filter((part) => part.type === "tool"))
   const current = [...tools].reverse().find((part) => part.state.status === "running" || part.state.status === "pending")
   const latest = current ?? tools.at(-1)
+  const usage = assistant?.tokens
+  const used = usage ? [usage.input, usage.output, usage.reasoning, usage.cache.read, usage.cache.write].reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0) : 0
+  const { providerID, modelID } = subagentModel(session, infos)
   return {
-    model: assistant?.role === "assistant" ? `${assistant.providerID} / ${assistant.modelID}` : session?.model ? `${session.model.providerID} / ${session.model.id}` : "Model belum dilaporkan",
+    title: session?.title ?? "Judul belum dilaporkan",
+    model: providerID && modelID ? `${providerID} / ${modelID}` : "Model belum dilaporkan",
     started: session?.time.created,
     activity: latest ? activityDetail(latest) : undefined,
     current: Boolean(current),
     todos,
     completed: todos.filter((todo) => todo.status === "completed").length,
+    toolCount: tools.length,
+    used: used > 0 ? used : undefined,
+    output: usage && usage.output > 0 ? usage.output : undefined,
+    limit,
+    percent: used > 0 && limit !== undefined && limit > 0 ? Math.round(used / limit * 100) : undefined,
   }
 }
 
@@ -25,7 +48,10 @@ export async function fetchSubagent(api: TuiPluginApi, sessionID: string, signal
     api.client.session.todo(params, { signal }),
   ])
   if (session.error || messages.error || todos.error) throw new Error("Detail subagent belum tersedia dari host")
-  return subagentDetails(session.data, messages.data ?? [], todos.data ?? [])
+  const list = messages.data ?? []
+  const { providerID, modelID } = subagentModel(session.data, list.map((entry) => entry.info))
+  const limit = providerID && modelID ? api.state.provider.find((item) => item.id === providerID)?.models[modelID]?.limit.context : undefined
+  return subagentDetails(session.data, list, todos.data ?? [], limit)
 }
 
 export function elapsedLabel(start: number | undefined, now: number) {

@@ -95,15 +95,6 @@ function navigateToSession(api: TuiPluginApi, target: string | undefined) {
   api.route.navigate("session", { sessionID: target })
 }
 
-/** Total tokens reported by a child session's latest assistant message, if any. */
-function childTokens(api: TuiPluginApi, childID: string) {
-  const latest = [...api.state.session.messages(childID)].reverse().find((message) => message.role === "assistant")
-  if (!latest || latest.role !== "assistant") return undefined
-  const tokens = latest.tokens
-  const total = tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
-  return total > 0 ? total : undefined
-}
-
 type SubagentStatus = "running" | "done" | "error"
 
 /**
@@ -240,13 +231,20 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
     const start = started()
     return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, (props.ended ?? now()) - start) : 0
   }
-  const tokens = () => childTokens(props.api, props.agent.id)
-  const rate = () => {
-    const value = tokens()
+  // Session title replaces the provider/model line; the stat line carries Tools,
+  // context used with percent of limit, and output tokens/sec next to elapsed.
+  const summary = () => {
+    const detail = data()
     const seconds = elapsed() / 1000
-    return value !== undefined && seconds > 0 ? value / seconds : undefined
+    const stat = [
+      elapsedLabel(started(), props.ended ?? now()),
+      detail ? `${detail.toolCount} Tools` : "… Tools",
+      detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined,
+      detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined,
+    ].filter((part): part is string => Boolean(part)).join(" · ")
+    return `${detail?.title ?? "Memuat judul…"}\n${stat}`
   }
-  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Baru berakhir" : props.agent.label}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={`${data()?.model ?? "Memuat model…"}\n${elapsedLabel(started(), props.ended ?? now())}${tokens() === undefined ? "" : ` · ${compact(tokens()!)} tok`}${rate() === undefined ? "" : ` · ${rate()!.toFixed(1)} t/s`}`}>
+  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Baru berakhir" : props.agent.label}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={summary()}>
     <Show when={props.agent.target}><text fg={theme().text} wrapMode="word">{props.agent.target}</text></Show>
     <Show when={error()}><text fg={theme().warning}>{error()}</text></Show>
     <Show when={data()}>{(detail) => <box gap={1}>

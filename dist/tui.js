@@ -85,18 +85,37 @@ function sidebarActivity(api, id) {
 }
 
 // src/subagent.ts
-function subagentDetails(session, messages, todos) {
-  const assistant = [...messages].reverse().find((entry) => entry.info.role === "assistant")?.info;
+function latestAssistant(messages) {
+  return [...messages].reverse().find((message) => message.role === "assistant");
+}
+function subagentModel(session, messages) {
+  const assistant = latestAssistant(messages);
+  const providerID = assistant?.providerID ?? session?.model?.providerID;
+  const modelID = assistant?.modelID ?? session?.model?.id;
+  return { providerID, modelID };
+}
+function subagentDetails(session, messages, todos, limit) {
+  const infos = messages.map((entry) => entry.info);
+  const assistant = latestAssistant(infos);
   const tools = messages.flatMap((entry) => entry.parts.filter((part) => part.type === "tool"));
   const current = [...tools].reverse().find((part) => part.state.status === "running" || part.state.status === "pending");
   const latest = current ?? tools.at(-1);
+  const usage = assistant?.tokens;
+  const used = usage ? [usage.input, usage.output, usage.reasoning, usage.cache.read, usage.cache.write].reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0) : 0;
+  const { providerID, modelID } = subagentModel(session, infos);
   return {
-    model: assistant?.role === "assistant" ? `${assistant.providerID} / ${assistant.modelID}` : session?.model ? `${session.model.providerID} / ${session.model.id}` : "Model belum dilaporkan",
+    title: session?.title ?? "Judul belum dilaporkan",
+    model: providerID && modelID ? `${providerID} / ${modelID}` : "Model belum dilaporkan",
     started: session?.time.created,
     activity: latest ? activityDetail(latest) : undefined,
     current: Boolean(current),
     todos,
-    completed: todos.filter((todo) => todo.status === "completed").length
+    completed: todos.filter((todo) => todo.status === "completed").length,
+    toolCount: tools.length,
+    used: used > 0 ? used : undefined,
+    output: usage && usage.output > 0 ? usage.output : undefined,
+    limit,
+    percent: used > 0 && limit !== undefined && limit > 0 ? Math.round(used / limit * 100) : undefined
   };
 }
 async function fetchSubagent(api, sessionID, signal) {
@@ -108,7 +127,10 @@ async function fetchSubagent(api, sessionID, signal) {
   ]);
   if (session.error || messages.error || todos.error)
     throw new Error("Detail subagent belum tersedia dari host");
-  return subagentDetails(session.data, messages.data ?? [], todos.data ?? []);
+  const list = messages.data ?? [];
+  const { providerID, modelID } = subagentModel(session.data, list.map((entry) => entry.info));
+  const limit = providerID && modelID ? api.state.provider.find((item) => item.id === providerID)?.models[modelID]?.limit.context : undefined;
+  return subagentDetails(session.data, list, todos.data ?? [], limit);
 }
 function elapsedLabel(start, now) {
   if (start === undefined || !Number.isFinite(start) || start <= 0)
@@ -260,14 +282,6 @@ function navigateToSession(api, target) {
   api.route.navigate("session", {
     sessionID: target
   });
-}
-function childTokens(api, childID) {
-  const latest = [...api.state.session.messages(childID)].reverse().find((message) => message.role === "assistant");
-  if (!latest || latest.role !== "assistant")
-    return;
-  const tokens = latest.tokens;
-  const total = tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write;
-  return total > 0 ? total : undefined;
 }
 function asyncIdentity(api, id) {
   const tools = api.state.session.messages(id).flatMap((message) => api.state.part(message.id)).filter((part) => part.type === "tool").filter((part) => part.tool === "task" || part.tool === "subagent");
@@ -466,11 +480,12 @@ function SubagentCard(props) {
     const start = started();
     return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, (props.ended ?? now()) - start) : 0;
   };
-  const tokens = () => childTokens(props.api, props.agent.id);
-  const rate = () => {
-    const value = tokens();
+  const summary = () => {
+    const detail = data();
     const seconds = elapsed() / 1000;
-    return value !== undefined && seconds > 0 ? value / seconds : undefined;
+    const stat = [elapsedLabel(started(), props.ended ?? now()), detail ? `${detail.toolCount} Tools` : "\u2026 Tools", detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined, detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined].filter((part) => Boolean(part)).join(" \xB7 ");
+    return `${detail?.title ?? "Memuat judul\u2026"}
+${stat}`;
   };
   return _$createComponent(InfoCard, {
     get api() {
@@ -484,8 +499,7 @@ function SubagentCard(props) {
     },
     onActivate: () => navigateToSession(props.api, props.agent.id),
     get summary() {
-      return `${data()?.model ?? "Memuat model\u2026"}
-${elapsedLabel(started(), props.ended ?? now())}${tokens() === undefined ? "" : ` \xB7 ${compact(tokens())} tok`}${rate() === undefined ? "" : ` \xB7 ${rate().toFixed(1)} t/s`}`;
+      return summary();
     },
     get children() {
       return [_$createComponent(Show, {
