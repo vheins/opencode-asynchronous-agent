@@ -96,15 +96,16 @@ function navigateToSession(api: TuiPluginApi, target: string | undefined) {
 type CreatureStage = { name: string; frames: [string[], string[]] }
 
 /**
- * Growth cap in messages: stage = min(4, floor(peak / 40)). Thresholds
- * 0/40/80/120/160/200 map to stages 0..4 (Egg/Hatchling/Child/Teen/Adult).
+ * Growth cap in messages: stage = min(9, floor(peak / 20)). Thresholds
+ * 0/20/40/.../200 map to stages 0..9 (Egg/Hatchling/Child/Teen/Adult/Elder/
+ * Ancient/Mythic/Legendary/Divine).
  */
 const creatureGrowthCap = 200
 
 /** Cell width for the 3-column creature grid; sprite lines stay within it. */
 const creatureCellWidth = 10
 
-/** Five growth stages, selected by total message count. Each frame is 3-4 compact lines. */
+/** Ten growth stages, selected by total message count. Each frame is 3-4 compact lines. */
 const creatureStages: CreatureStage[] = [
   { name: "Egg", frames: [[
     " .--.",
@@ -152,6 +153,61 @@ const creatureStages: CreatureStage[] = [
     " /^ ^\\",
     " | o |",
     " <| |>",
+  ]] },
+  { name: "Elder", frames: [[
+    "  /\\_/\\",
+    " ( o o )",
+    "  \\ - /",
+    " /|   |\\",
+  ], [
+    "  /\\_/\\",
+    " ( ^ ^ )",
+    "  \\ o /",
+    " /|   |\\",
+  ]] },
+  { name: "Ancient", frames: [[
+    "  _/\\_",
+    " / o o \\",
+    " |  ^  |",
+    " <|/ \\|>",
+  ], [
+    "  _/\\_",
+    " / - - \\",
+    " |  o  |",
+    " <|/ \\|>",
+  ]] },
+  { name: "Mythic", frames: [[
+    " \\_|_|_/",
+    "  (o)(o)",
+    " /| ^ |\\",
+    "  ^   ^",
+  ], [
+    " \\_|_|_/",
+    "  (-)(-)",
+    " /| o |\\",
+    "  ^   ^",
+  ]] },
+  { name: "Legendary", frames: [[
+    " /\\___/\\",
+    "( o  o )",
+    " \\  ^  /",
+    " <|/ \\|>",
+  ], [
+    " /\\___/\\",
+    "( ^  ^ )",
+    " \\  o  /",
+    " <|/ \\|>",
+  ]] },
+  { name: "Divine", frames: [[
+    " \\|/^\\|/",
+    "  (o o)",
+    " <| ^ |>",
+    "  ^/ \\^",
+  ], [
+    " \\|/^\\|/",
+    "  (^ ^)",
+    " <| o |>",
+    "  ^/ \\^",
   ]] },
 ]
 
