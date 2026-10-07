@@ -164,10 +164,24 @@ const creatureStages: CreatureStage[] = [
   ]] },
 ]
 
-/** Highest message count reached per creature key, so growth never regresses in a session. */
+/**
+ * Running high-water mark of message count per creature key. Auto-compress
+ * collapses older messages into a summary, so the raw count can rise then fall;
+ * growth and the displayed stat must read this monotonic peak instead.
+ */
+const peakMessages = new Map<string, number>()
+
+/** Returns the monotonic peak message count for a creature key (never shrinks). */
+function messagePeak(key: string, count: number) {
+  const peak = Math.max(peakMessages.get(key) ?? 0, Math.max(0, count))
+  peakMessages.set(key, peak)
+  return peak
+}
+
+/** Stage-level high-water mark, so a stage never regresses even if the peak is re-clamped. */
 const creaturePeak = new Map<string, number>()
 
-/** Maps total message count to a monotonic growth stage for a creature key. */
+/** Maps a peak message count to a monotonic growth stage for a creature key. */
 function growthStage(key: string, count: number) {
   const capped = Math.max(0, Math.min(creatureGrowthCap, count))
   const peak = Math.max(creaturePeak.get(key) ?? 0, capped)
@@ -397,15 +411,17 @@ export function WorkspaceCard(props: { api: TuiPluginApi; id: string }) {
 
 /**
  * A single growth-reactive creature: multi-line ASCII frames cycled by the shared
- * tick while working, static frame when idle. Stage derives from total message count.
+ * tick while working, static frame when idle. Growth and the message stat read a
+ * monotonic high-water mark, so auto-compress never shrinks the creature.
  */
 export function Creature(props: { api: TuiPluginApi; name: string; count: number; working: boolean; growthKey: string }) {
   const theme = () => props.api.theme.current
   useCreatureAnimation(() => props.working)
-  const stage = createMemo(() => growthStage(props.growthKey, props.count))
+  const peak = createMemo(() => messagePeak(props.growthKey, props.count))
+  const stage = createMemo(() => growthStage(props.growthKey, peak()))
   const frame = () => stage().frames[props.working ? creatureFrame() % 2 : 0]
   return <box flexDirection="column">
-    <text fg={theme().text}><b>{props.name}</b><span style={{ fg: theme().textMuted }}> · {stage().name}{props.working ? "" : " · idle"}</span></text>
+    <text fg={theme().text}><b>{props.name}</b><span style={{ fg: theme().textMuted }}> · {stage().name} · {peak()} msg{props.working ? "" : " · idle"}</span></text>
     <For each={frame()}>{(line) => <text fg={props.working ? theme().accent : theme().textMuted}>{line}</text>}</For>
   </box>
 }
