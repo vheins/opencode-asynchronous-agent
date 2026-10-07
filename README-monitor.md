@@ -1,5 +1,16 @@
 # opencode-subagent-statusline
 
+> **Attribution note.** This document describes the original vendored
+> `opencode-subagent-statusline` monitor, kept for attribution under
+> [`LICENSE-monitor`](./LICENSE-monitor). In
+> `@vheins/opencode-asynchronous-agent` the `./tui` surface has been replaced by a
+> Saffteen-style sidebar (`src/tui.tsx`): a collapsible InfoCard stack (MCP
+> connections, activity/result, provider token report, task progress, workspace)
+> plus per-subagent cards, while preserving the async-agent aggregate
+> (running/done/error/total), per-subagent elapsed + tokens + tokens/sec, and the
+> `OPENCODE_SUBAGENT_NOTIFY` done/error toast. See [`README.md`](./README.md) for
+> the current behavior.
+
 ![Subagents Monitor banner](https://raw.githubusercontent.com/Joaquinvesapa/sub-agent-statusline/main/assets/subagents_monitor_banner.webp)
 
 **Subagent Monitor for OpenCode.**

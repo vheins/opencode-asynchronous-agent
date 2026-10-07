@@ -7,16 +7,24 @@ monitor** for those background subagents.
 Works on **both** OpenCode V1 (`>=1.18.0`) and V2 (`>=2.0.0`):
 
 - **`./server`** — the tool hook that forces `background = true`
-- **`./tui`** — the sidebar monitor: running/done/error counts, per-subagent
+- **`./tui`** — the sidebar monitor: a Saffteen-style collapsible InfoCard stack
+  (MCP connections, activity/result, provider token report, task progress,
+  workspace) plus per-subagent cards (activity, todo, model, duration). The
+  async-agent identity is preserved: running/done/error/total counts, per-subagent
   elapsed time, **total tokens + tokens/sec**, and a status-bar line when the
-  sidebar is collapsed
+  sidebar is collapsed.
 
 ```
-▼ Subagents 0.3.3
-● 1 run · ✓ 0 done · ✕ 0 err · Σ 1
- [ ] Write a single short para… (executor · high)
-    ↳  00:07  48.0k tok  16.3 t/s
+Subagents 3
+● 1 run · ✓ 1 done · ✕ 1 err · Σ 3
+ ● Write a single short para…
+    ↳ 00m 07d · 48k tok · 16.3 t/s
 ```
+
+The sidebar renders a collapsible InfoCard stack plus per-subagent cards; the
+aggregate counts and per-subagent elapsed/tokens/tokens-per-second are always
+shown. The `app_bottom` line mirrors the aggregate when the sidebar is
+collapsed.
 
 OpenCode V2 ships a keybind (`ctrl+b`, command `session.background`) that moves a
 *running* foreground subagent into background observation. This plugin gives you the
@@ -212,7 +220,11 @@ export OPENCODE_AUTO_BG_SUBAGENT=0
 | `src/index.js` | The plugin implementation (`id`/`setup` for V2, `server` for V1, hook logic). |
 | `server.js` | `./server` entrypoint — re-exports `src/index.js` (V1 + V2). |
 | `index.js` | Alternate directory entrypoint — mirrors `server.js`. |
-| `dist/tui.js` | `./tui` entrypoint — the TUI sidebar monitor bundle. |
+| `src/tui.tsx` | Source of the TUI sidebar plugin (InfoCard stack + per-subagent cards + async identity). |
+| `src/model.ts` | Sidebar data helpers: `activityDetail`, `sessionMetrics`, `sidebarActivity`. |
+| `src/subagent.ts` | Subagent detail fetch (`fetchSubagent`), summary (`subagentDetails`), duration (`elapsedLabel`). |
+| `src/workspace.ts` | Bounded Git workspace scan for the "Ruang kerja & berkas" card. |
+| `dist/tui.js` | `./tui` entrypoint — the built TUI sidebar bundle (`bun run build`). |
 | `package.json` | Package metadata and entrypoint exports. |
 
 OpenCode V2 resolves a plugin directory through its `server` entrypoint (root
