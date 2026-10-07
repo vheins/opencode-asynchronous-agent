@@ -42,6 +42,42 @@ function compact(value: number) {
   return Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value)
 }
 
+/** Keeps the trailing segments of a path within a character budget, ellipsizing the front. */
+function truncatePath(path: string, max: number) {
+  if (max <= 1) return "…"
+  if (path.length <= max) return path
+  const budget = max - 1
+  const parts = path.split("/").filter(Boolean)
+  let tail = ""
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const next = `/${parts[index]}${tail}`
+    if (next.length > budget) break
+    tail = next
+  }
+  return tail ? `…${tail}` : `…${path.slice(-budget)}`
+}
+
+type StatusSegment = { text: string; tone: "primary" | "muted" | "accent"; priority: number }
+
+/**
+ * Fits status segments into a character budget, dropping the lowest-value
+ * optional segments first (higher priority number = dropped earlier). Priority 0
+ * segments are never dropped; if they still overflow, the last one is ellipsized.
+ */
+function fitStatus(segments: StatusSegment[], budget: number): StatusSegment[] {
+  const kept = segments.map((segment) => ({ ...segment }))
+  const total = () => kept.reduce((sum, segment) => sum + segment.text.length, 0)
+  for (const segment of [...kept].sort((a, b) => b.priority - a.priority)) {
+    if (total() <= budget) break
+    if (segment.priority === 0) continue
+    const index = kept.indexOf(segment)
+    if (index >= 0) kept.splice(index, 1)
+  }
+  const last = kept[kept.length - 1]
+  if (last && total() > budget) last.text = `${last.text.slice(0, Math.max(1, last.text.length - (total() - budget) - 1))}…`
+  return kept
+}
+
 /**
  * A stable 1s clock owned by the calling component. Returned accessor is reactive,
  * so elapsed labels recompute every second even if child rows are recreated.
@@ -355,8 +391,25 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
   const identity = createMemo(() => asyncIdentity(props.api, props.id))
   const theme = () => props.api.theme.current
   const state = () => activity().attention > 0 ? `${activity().attention} menunggu jawaban` : activity().status?.type === "busy" ? "Bekerja" : activity().status?.type === "retry" ? "Mencoba ulang" : "Siap"
-  const latest = () => activity().latest ? `${activityDetail(activity().latest!).status} · ${activityDetail(activity().latest!).action}` : "Belum ada aktivitas tool"
-  const target = () => activity().latest ? activityDetail(activity().latest!).target : ""
+  // One physical line only: the dock is capped at the terminal width so the
+  // app_bottom surface can never spill past two lines (dock + StatusBar).
+  const width = () => Math.max(1, (size().width || 80) - 2)
+  const segments = (): StatusSegment[] => {
+    const list: StatusSegment[] = [
+      { text: `ASYNC · ${data().agent ?? "Sesi"}`, tone: "primary", priority: 0 },
+      { text: ` | ● ${identity().running} run · ✓ ${identity().done} done · ✕ ${identity().error} err · Σ ${identity().total}`, tone: "muted", priority: 1 },
+      { text: ` | ${state()} | ${data().model}`, tone: "muted", priority: 2 },
+    ]
+    if (data().used !== undefined) list.push({ text: ` · ${compact(data().used ?? NaN)} token`, tone: "muted", priority: 3 })
+    if (activity().latest) {
+      const detail = activityDetail(activity().latest!)
+      list.push({ text: ` | ${detail.status} · ${detail.action}`, tone: "muted", priority: 4 })
+      const target = detail.target ?? ""
+      if (target) list.push({ text: ` · ${truncatePath(target, Math.max(4, Math.floor(width() / 2)))}`, tone: "muted", priority: 5 })
+    }
+    list.push({ text: " | /studio-panel · detail", tone: "accent", priority: 6 })
+    return fitStatus(list, width())
+  }
   const open = () => props.api.ui.dialog.replace(() => <props.api.ui.Dialog onClose={() => props.api.ui.dialog.clear()}>
     <box padding={1}>
       <text fg={theme().primary}><b>Studio · Detail sesi</b> · Esc tutup</text>
@@ -375,11 +428,8 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
       backgroundColor={theme().backgroundPanel}
       width="100%" flexShrink={0} paddingLeft={1} paddingRight={1}
       onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); open() } }}>
-      <text fg={theme().text} wrapMode="word">
-        <b>ASYNC · {data().agent ?? "Sesi"}</b>
-        <span style={{ fg: theme().textMuted }}> | {state()} | {data().model}{data().used === undefined ? "" : ` · ${compact(data().used ?? NaN)} token`} | ● {identity().running} run · ✓ {identity().done} done · ✕ {identity().error} err · Σ {identity().total} | </span>
-        <span style={{ fg: theme().textMuted }}>{latest()}{target() ? ` · ${target()}` : ""} | </span>
-        <span style={{ fg: theme().primary }}>/studio-panel · detail</span>
+      <text wrapMode="none" truncate>
+        <For each={segments()}>{(segment, index) => <span style={{ fg: segment.tone === "primary" ? theme().primary : segment.tone === "accent" ? theme().primary : theme().textMuted }}>{segment.tone === "primary" && index() === 0 ? <b>{segment.text}</b> : segment.text}</span>}</For>
       </text>
     </box>
   </Show>
