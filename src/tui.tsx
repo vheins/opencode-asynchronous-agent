@@ -93,6 +93,48 @@ function navigateToSession(api: TuiPluginApi, target: string | undefined) {
   api.route.navigate("session", { sessionID: target })
 }
 
+type CreatureStage = { name: string; frames: [string, string] }
+
+/** Five growth stages, selected by context percent (0/20/40/60/80/100). */
+const creatureStages: CreatureStage[] = [
+  { name: "Egg", frames: ["( )", "(@)"] },
+  { name: "Hatchling", frames: ["(•ᴗ•)", "(•o•)"] },
+  { name: "Child", frames: ["(◕ᴗ◕)", "(◕‿◕)"] },
+  { name: "Teen", frames: ["(≧ᴗ≦)", "(≧ω≦)"] },
+  { name: "Adult", frames: ["ヽ(・∀・)ﾉ", "ヽ(^ω^)ﾉ"] },
+]
+
+/** Highest percent reached per creature key, so growth never regresses in a session. */
+const creaturePeak = new Map<string, number>()
+
+/** Maps context percent to a monotonic growth stage for a creature key. */
+function growthStage(key: string, percent: number | undefined) {
+  const peak = Math.max(creaturePeak.get(key) ?? 0, Math.max(0, Math.min(100, percent ?? 0)))
+  creaturePeak.set(key, peak)
+  return creatureStages[Math.min(creatureStages.length - 1, Math.floor(peak / 20))]
+}
+
+const [creatureFrame, setCreatureFrame] = createSignal(0)
+let creatureTimer: ReturnType<typeof setInterval> | undefined
+let creatureSubscribers = 0
+
+/**
+ * Reference-counted 200ms animation tick shared by every creature. The single
+ * interval starts when the first working creature subscribes and stops when the
+ * last one goes idle, so no timer runs while all agents are idle.
+ */
+function useCreatureAnimation(working: Accessor<boolean>) {
+  createEffect(() => {
+    if (!working()) return
+    creatureSubscribers++
+    if (!creatureTimer) creatureTimer = setInterval(() => setCreatureFrame((frame) => frame + 1), 200)
+    onCleanup(() => {
+      creatureSubscribers = Math.max(0, creatureSubscribers - 1)
+      if (creatureSubscribers === 0 && creatureTimer) { clearInterval(creatureTimer); creatureTimer = undefined }
+    })
+  })
+}
+
 type SubagentStatus = "running" | "done" | "error"
 
 /**
@@ -292,6 +334,37 @@ export function WorkspaceCard(props: { api: TuiPluginApi; id: string }) {
   </InfoCard>
 }
 
+/**
+ * A single growth-reactive creature: Unicode frames cycled by the shared tick
+ * while working, static frame when idle. Stage derives from context percent.
+ */
+export function Creature(props: { api: TuiPluginApi; name: string; percent: number | undefined; working: boolean; growthKey: string }) {
+  const theme = () => props.api.theme.current
+  useCreatureAnimation(() => props.working)
+  const stage = createMemo(() => growthStage(props.growthKey, props.percent))
+  const frame = () => props.working ? creatureFrame() % 2 : 0
+  return <box flexDirection="row">
+    <text fg={props.working ? theme().accent : theme().textMuted}><b>{stage().frames[frame()]}</b></text>
+    <text fg={theme().text}> {props.name}</text>
+    <text fg={theme().textMuted}> · {stage().name}{props.percent !== undefined ? ` ${props.percent}%` : ""}{props.working ? "" : " · idle"}</text>
+  </box>
+}
+
+/** Sidebar card: one growth-reactive creature for the main session plus one per active subagent. */
+export function CreatureCard(props: { api: TuiPluginApi; id: string }) {
+  const activity = createMemo(() => sidebarActivity(props.api, props.id))
+  const main = createMemo(() => sessionMetrics(props.api, props.id))
+  const agents = retainActivity(() => activity().agents, (agent) => agent.id, () => props.id)
+  const mainWorking = () => activity().status?.type === "busy" || activity().status?.type === "retry"
+  return <InfoCard api={props.api} name="creatures" title="Creatures" initialOpen summary={`${agents().length + 1} creatures · grow with context`}>
+    <Creature api={props.api} growthKey={`main:${props.id}`} name={main().agent ?? "Main"} percent={main().percent} working={mainWorking()} />
+    <For each={agents()}>{(row) => {
+      const detail = createMemo(() => sessionMetrics(props.api, row.item.id))
+      return <Creature api={props.api} growthKey={`agent:${row.item.id}`} name={row.item.name} percent={detail().percent} working={row.ended === undefined} />
+    }}</For>
+  </InfoCard>
+}
+
 /** Async-agent aggregate: running/done/err/total. Per-subagent detail lives in SubagentCard. */
 export function AsyncIdentity(props: { api: TuiPluginApi; id: string; compact?: boolean }) {
   const theme = () => props.api.theme.current
@@ -350,6 +423,7 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
           <Show when={agents().length > limit()}><text fg={theme().textMuted}>+{agents().length - limit()} more agents</text></Show>
         </Show>
       </box>
+      <CreatureCard api={props.api} id={props.id} />
       <Show when={activity().attention > 0}>
         <box>
           <text fg={theme().warning}><b>Needs answer · {activity().attention}</b></text>
