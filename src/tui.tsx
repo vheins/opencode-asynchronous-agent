@@ -101,66 +101,57 @@ type CreatureStage = { name: string; frames: [string[], string[]] }
  */
 const creatureGrowthCap = 200
 
-/** Five growth stages, selected by total message count. Each frame is 4-5 lines. */
+/** Cell width for the 3-column creature grid; sprite lines stay within it. */
+const creatureCellWidth = 10
+
+/** Five growth stages, selected by total message count. Each frame is 3-4 compact lines. */
 const creatureStages: CreatureStage[] = [
   { name: "Egg", frames: [[
-    "  .---.",
-    " /     \\",
-    " \\     /",
-    "  '---'",
+    " .--.",
+    "(    )",
+    " '--'",
   ], [
-    "  .---.",
-    " /  .  \\",
-    " \\     /",
-    "  '---'",
+    " .--.",
+    "( .. )",
+    " '--'",
   ]] },
   { name: "Hatchling", frames: [[
-    "   ,---.",
-    "  ( o o )",
-    "   \\ ^ /",
-    "  /|   |\\",
+    "  __",
+    " (oo)",
+    " /||\\",
   ], [
-    "   ,---.",
-    "  ( - - )",
-    "   \\ v /",
-    "  /|   |\\",
+    "  __",
+    " (--)",
+    " /||\\",
   ]] },
   { name: "Child", frames: [[
-    "  .-----.",
-    " ( ^   ^ )",
-    "  \\  ~  /",
-    " /|     |\\",
+    " .----.",
+    "( ^  ^ )",
+    " \\ -- /",
   ], [
-    "  .-----.",
-    " ( ^   ^ )",
-    "  \\  o  /",
-    " /|     |\\",
+    " .----.",
+    "( ^  ^ )",
+    " \\ oo /",
   ]] },
   { name: "Teen", frames: [[
-    "   .-----.",
-    "  / ^   ^ \\",
-    " (  \\___/  )",
-    "  \\       /",
-    "  /|     |\\",
+    "  .---.",
+    " ( ^ ^ )",
+    " <|   |>",
   ], [
-    "   .-----.",
-    "  / ^   ^ \\",
-    " (  \\ o /  )",
-    "  \\       /",
-    "  /|     |\\",
+    "  .---.",
+    " ( ^ ^ )",
+    " <| o |>",
   ]] },
   { name: "Adult", frames: [[
-    "   __---__",
-    "  / ^   ^ \\",
-    " |  \\___/  |",
-    "  \\       /",
-    " /||     ||\\",
+    "  ___",
+    " /^ ^\\",
+    " | - |",
+    " <| |>",
   ], [
-    "   __---__",
-    "  / ^   ^ \\",
-    " |  \\ o /  |",
-    "  \\       /",
-    " /||     ||\\",
+    "  ___",
+    " /^ ^\\",
+    " | o |",
+    " <| |>",
   ]] },
 ]
 
@@ -410,9 +401,10 @@ export function WorkspaceCard(props: { api: TuiPluginApi; id: string }) {
 }
 
 /**
- * A single growth-reactive creature: multi-line ASCII frames cycled by the shared
- * tick while working, static frame when idle. Growth and the message stat read a
- * monotonic high-water mark, so auto-compress never shrinks the creature.
+ * A single growth-reactive creature: compact ASCII frames cycled by the shared
+ * tick while working, static frame when idle. The sprite sits above a name-only
+ * label; growth reads the monotonic message high-water mark. Sized to one cell
+ * of the 3-column grid.
  */
 export function Creature(props: { api: TuiPluginApi; name: string; count: number; working: boolean; growthKey: string }) {
   const theme = () => props.api.theme.current
@@ -420,24 +412,48 @@ export function Creature(props: { api: TuiPluginApi; name: string; count: number
   const peak = createMemo(() => messagePeak(props.growthKey, props.count))
   const stage = createMemo(() => growthStage(props.growthKey, peak()))
   const frame = () => stage().frames[props.working ? creatureFrame() % 2 : 0]
-  return <box flexDirection="column">
-    <text fg={theme().text}><b>{props.name}</b><span style={{ fg: theme().textMuted }}> · {stage().name} · {peak()} msg{props.working ? "" : " · idle"}</span></text>
-    <For each={frame()}>{(line) => <text fg={props.working ? theme().accent : theme().textMuted}>{line}</text>}</For>
+  return <box flexDirection="column" width={creatureCellWidth}>
+    <For each={frame()}>{(line) => <text fg={props.working ? theme().accent : theme().textMuted} wrapMode="none">{line}</text>}</For>
+    <text fg={props.working ? theme().accent : theme().textMuted} wrapMode="none">{props.name}</text>
   </box>
 }
 
-/** Sidebar card: one growth-reactive creature for the main session plus one per active subagent. */
+type CreatureCell = { key: string; name: string; count: number; working: boolean }
+
+/** Number of creature cells per grid row. */
+const creatureColumns = 3
+
+/** Sidebar card: a wrapping grid of growth-reactive creatures, main session first. */
 export function CreatureCard(props: { api: TuiPluginApi; id: string }) {
   const activity = createMemo(() => sidebarActivity(props.api, props.id))
   const main = createMemo(() => sessionMetrics(props.api, props.id))
-  const agents = retainActivity(() => activity().agents, (agent) => agent.id, () => props.id)
   const mainWorking = () => activity().status?.type === "busy" || activity().status?.type === "retry"
-  return <InfoCard api={props.api} name="creatures" title="Creatures" initialOpen summary={`${agents().length + 1} creatures · grow with messages`}>
-    <Creature api={props.api} growthKey={`main:${props.id}`} name={main().agent ?? "Main"} count={main().count} working={mainWorking()} />
-    <For each={agents()}>{(row) => {
-      const detail = createMemo(() => sessionMetrics(props.api, row.item.id))
-      return <Creature api={props.api} growthKey={`agent:${row.item.id}`} name={row.item.name} count={detail().count} working={row.ended === undefined} />
-    }}</For>
+  // Accumulate every subagent ever seen this session; ended agents stay until the
+  // card unmounts (i.e. the main session ends), so no creature is dropped on end.
+  const seen = new Map<string, string>()
+  const [agents, setAgents] = createSignal<{ id: string; name: string }[]>([])
+  createEffect(() => {
+    let added = false
+    for (const agent of activity().agents) {
+      if (!seen.has(agent.id)) { seen.set(agent.id, agent.name); added = true }
+    }
+    if (added) setAgents([...seen].map(([id, name]) => ({ id, name })))
+  })
+  const cells = createMemo<CreatureCell[]>(() => {
+    const live = new Set(activity().agents.map((agent) => agent.id))
+    return [
+      { key: `main:${props.id}`, name: main().agent ?? "Main", count: main().count, working: mainWorking() },
+      ...agents().map((agent) => ({ key: `agent:${agent.id}`, name: agent.name, count: sessionMetrics(props.api, agent.id).count, working: live.has(agent.id) })),
+    ]
+  })
+  const rows = createMemo(() => {
+    const list = cells()
+    return Array.from({ length: Math.ceil(list.length / creatureColumns) }, (_, index) => list.slice(index * creatureColumns, index * creatureColumns + creatureColumns))
+  })
+  return <InfoCard api={props.api} name="creatures" title="Creatures" initialOpen summary={`${cells().length} creatures · grow with messages`}>
+    <For each={rows()}>{(row) => <box flexDirection="row" gap={1}>
+      <For each={row}>{(cell) => <Creature api={props.api} growthKey={cell.key} name={cell.name} count={cell.count} working={cell.working} />}</For>
+    </box>}</For>
   </InfoCard>
 }
 
