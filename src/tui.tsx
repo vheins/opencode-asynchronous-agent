@@ -242,9 +242,9 @@ export function WorkspaceCard(props: { api: TuiPluginApi; id: string }) {
     <text fg={theme().textMuted} wrapMode="char">{props.api.state.path.directory}</text>
     <text fg={theme().textMuted}>Git lokal, bukan hanya perubahan sesi · refresh 15 dtk</text>
     <Show when={data()}>{(scan) => <box gap={1}>
-      <For each={scan().repos} fallback={<text fg={theme().textMuted}>Tidak ditemukan repo Git dalam cakupan pemindaian.</text>}>{(repo) => <box>
+      <For each={scan().repos}>{(repo) => <box>
         <text fg={theme().primary} wrapMode="char"><b>{repo.path}</b> · {repo.branch}</text>
-        <Show when={repo.error} fallback={<text fg={theme().textMuted}>{repo.files.length ? `${repo.files.length} entri berubah` : "Working tree bersih"}</text>}><text fg={theme().warning}>{repo.error}</text></Show>
+        <Show when={repo.error}><text fg={theme().warning}>{repo.error}</text></Show>
         <For each={repo.files}>{(file) => <text fg={theme().text} wrapMode="char">{file.status} {file.path}</text>}</For>
       </box>}</For>
       <For each={scan().errors}>{(message) => <text fg={theme().warning}>{message}</text>}</For>
@@ -297,6 +297,18 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
   const detail = (tool: Parameters<typeof activityDetail>[0]) => activityDetail(calls().get(tool.callID) ?? tool)
   const agents = retainActivity(() => activity().agents, (agent) => agent.id, () => props.id)
   const tools = retainActivity(() => activity().tools, (tool) => tool.callID, () => props.id)
+  // The single tool whose action/status the header summary already shows. The
+  // body must not repeat it, so it is filtered out of the detail list and only
+  // its unique target/result (never the action·status) is rendered below.
+  const headline = createMemo(() => activity().current ?? activity().latest)
+  const headlineDetail = createMemo(() => {
+    const item = headline()
+    if (!item) return undefined
+    if (item.tool === "task" || item.tool === "subagent") return undefined
+    if (activity().mcp.some((server) => server.calls.some((call) => call.callID === item.callID))) return undefined
+    return item
+  })
+  const visibleTools = createMemo(() => tools().filter((row) => row.item.callID !== headline()?.callID))
   const size = useTerminalDimensions()
   const limit = () => size().height < 35 ? 2 : 4
   return (
@@ -321,26 +333,26 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
           <text fg={theme().textMuted}>Periksa permintaan di percakapan.</text>
         </box>
       </Show>
-      <InfoCard api={props.api} name="result" title="Aktivitas & hasil" initialOpen summary={activity().current ? `${activityDetail(activity().current!).action} · ${activityDetail(activity().current!).status}` : activity().latest ? `${activityDetail(activity().latest!).action} · ${activityDetail(activity().latest!).status}` : "Belum ada aktivitas tool"}>
-        <Show when={tools().length > 0}>
+      <InfoCard api={props.api} name="result" title="Aktivitas & hasil" initialOpen summary={headline() ? `${activityDetail(headline()!).action} · ${activityDetail(headline()!).status}` : "Belum ada aktivitas tool"}>
+        <Show when={visibleTools().length > 0}>
           <box>
-            <For each={tools().slice(0, limit())}>{(row) =>
+            <For each={visibleTools().slice(0, limit())}>{(row) =>
               <box><text fg={theme().text} wrapMode="word">{detail(row.item).action} · {detail(row.item).status}{detail(row.item).target ? ` · ${detail(row.item).target}` : ""}</text><Show when={detail(row.item).result}><text fg={theme().textMuted} wrapMode="word">{detail(row.item).result}</text></Show></box>
             }</For>
-            <Show when={tools().length > limit()}><text fg={theme().textMuted}>+{tools().length - limit()} tool lainnya</text></Show>
+            <Show when={visibleTools().length > limit()}><text fg={theme().textMuted}>+{visibleTools().length - limit()} tool lainnya</text></Show>
           </box>
         </Show>
-        <Show when={activity().latest && !tools().slice(0, limit()).some((row) => row.item.callID === activity().latest?.callID) && !activity().mcp.some((server) => server.calls.some((call) => call.callID === activity().latest?.callID)) && !["task", "subagent"].includes(activity().latest!.tool) ? activity().latest : undefined}>{(latest) => <box>
-          <text fg={theme().text} wrapMode="word">{activityDetail(latest()).target || activityDetail(latest()).action}</text>
-          <text fg={theme().textMuted} wrapMode="word">{activityDetail(latest()).result || "Masih diproses; belum ada hasil akhir."}</text>
+        <Show when={headlineDetail()}>{(item) => <box>
+          <Show when={detail(item()).target}><text fg={theme().text} wrapMode="word">{detail(item()).target}</text></Show>
+          <text fg={theme().textMuted} wrapMode="word">{detail(item()).result || "Masih diproses; belum ada hasil akhir."}</text>
         </box>}</Show>
         <text fg={theme().textMuted} wrapMode="word">Hasil tes: lihat keluaran pengujian di percakapan; status tool bukan bukti tes lulus.</text>
       </InfoCard>
       <InfoCard api={props.api} name="context" title="Laporan token provider" summary={data().used === undefined ? "Token belum dilaporkan" : `${compact(data().used ?? NaN)} token · ${data().percent === undefined ? "konteks —" : `${data().percent}% konteks`} · $${data().cost.toFixed(4)}`}>
-        <text fg={theme().textMuted} wrapMode="char">{data().provider} · {data().used === undefined ? "— token" : `${compact(data().used ?? NaN)} token`} · {data().percent === undefined ? "konteks belum diukur" : `${data().percent}% konteks`} · ${data().cost.toFixed(4)}</text>
+        <text fg={theme().textMuted} wrapMode="char">Provider · {data().provider}</text>
       </InfoCard>
-      <InfoCard api={props.api} name="progress" title="Progres tugas" initialOpen summary={`${activity().completed}/${activity().total} selesai · ${activity().todos.length} tersisa`}>
-        <Show when={activity().total > 0} fallback={<text fg={theme().textMuted}>Belum ada daftar tugas di sesi ini.</text>}>
+      <InfoCard api={props.api} name="progress" title="Progres tugas" initialOpen summary={activity().total === 0 ? "Belum ada daftar tugas" : `${activity().completed}/${activity().total} selesai · ${activity().todos.length} tersisa`}>
+        <Show when={activity().total > 0}>
           <text fg={theme().textMuted}>{activity().todos.filter((todo) => todo.status === "in_progress").length} berjalan · {activity().todos.filter((todo) => todo.status === "pending").length} antre</text>
           <For each={[...props.api.state.session.todo(props.id)].sort((a, b) => ({ in_progress: 0, pending: 1, completed: 2 }[a.status] ?? 3) - ({ in_progress: 0, pending: 1, completed: 2 }[b.status] ?? 3))}>{(todo) =>
             <box marginTop={1}><text fg={todo.status === "in_progress" ? theme().primary : theme().textMuted}>{todo.status === "completed" ? "✓ Selesai" : todo.status === "in_progress" ? "› Sedang dikerjakan" : "· Menunggu"}</text><text fg={todo.status === "completed" ? theme().textMuted : theme().text} wrapMode="word">{todo.content}</text></box>
