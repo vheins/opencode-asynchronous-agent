@@ -93,25 +93,86 @@ function navigateToSession(api: TuiPluginApi, target: string | undefined) {
   api.route.navigate("session", { sessionID: target })
 }
 
-type CreatureStage = { name: string; frames: [string, string] }
+type CreatureStage = { name: string; frames: [string[], string[]] }
 
-/** Five growth stages, selected by context percent (0/20/40/60/80/100). */
+/**
+ * Growth cap in messages: stage = min(4, floor(peak / 40)). Thresholds
+ * 0/40/80/120/160/200 map to stages 0..4 (Egg/Hatchling/Child/Teen/Adult).
+ */
+const creatureGrowthCap = 200
+
+/** Five growth stages, selected by total message count. Each frame is 4-5 lines. */
 const creatureStages: CreatureStage[] = [
-  { name: "Egg", frames: ["( )", "(@)"] },
-  { name: "Hatchling", frames: ["(•ᴗ•)", "(•o•)"] },
-  { name: "Child", frames: ["(◕ᴗ◕)", "(◕‿◕)"] },
-  { name: "Teen", frames: ["(≧ᴗ≦)", "(≧ω≦)"] },
-  { name: "Adult", frames: ["ヽ(・∀・)ﾉ", "ヽ(^ω^)ﾉ"] },
+  { name: "Egg", frames: [[
+    "  .---.",
+    " /     \\",
+    " \\     /",
+    "  '---'",
+  ], [
+    "  .---.",
+    " /  .  \\",
+    " \\     /",
+    "  '---'",
+  ]] },
+  { name: "Hatchling", frames: [[
+    "   ,---.",
+    "  ( o o )",
+    "   \\ ^ /",
+    "  /|   |\\",
+  ], [
+    "   ,---.",
+    "  ( - - )",
+    "   \\ v /",
+    "  /|   |\\",
+  ]] },
+  { name: "Child", frames: [[
+    "  .-----.",
+    " ( ^   ^ )",
+    "  \\  ~  /",
+    " /|     |\\",
+  ], [
+    "  .-----.",
+    " ( ^   ^ )",
+    "  \\  o  /",
+    " /|     |\\",
+  ]] },
+  { name: "Teen", frames: [[
+    "   .-----.",
+    "  / ^   ^ \\",
+    " (  \\___/  )",
+    "  \\       /",
+    "  /|     |\\",
+  ], [
+    "   .-----.",
+    "  / ^   ^ \\",
+    " (  \\ o /  )",
+    "  \\       /",
+    "  /|     |\\",
+  ]] },
+  { name: "Adult", frames: [[
+    "   __---__",
+    "  / ^   ^ \\",
+    " |  \\___/  |",
+    "  \\       /",
+    " /||     ||\\",
+  ], [
+    "   __---__",
+    "  / ^   ^ \\",
+    " |  \\ o /  |",
+    "  \\       /",
+    " /||     ||\\",
+  ]] },
 ]
 
-/** Highest percent reached per creature key, so growth never regresses in a session. */
+/** Highest message count reached per creature key, so growth never regresses in a session. */
 const creaturePeak = new Map<string, number>()
 
-/** Maps context percent to a monotonic growth stage for a creature key. */
-function growthStage(key: string, percent: number | undefined) {
-  const peak = Math.max(creaturePeak.get(key) ?? 0, Math.max(0, Math.min(100, percent ?? 0)))
+/** Maps total message count to a monotonic growth stage for a creature key. */
+function growthStage(key: string, count: number) {
+  const capped = Math.max(0, Math.min(creatureGrowthCap, count))
+  const peak = Math.max(creaturePeak.get(key) ?? 0, capped)
   creaturePeak.set(key, peak)
-  return creatureStages[Math.min(creatureStages.length - 1, Math.floor(peak / 20))]
+  return creatureStages[Math.min(creatureStages.length - 1, Math.floor(peak / (creatureGrowthCap / creatureStages.length)))]
 }
 
 const [creatureFrame, setCreatureFrame] = createSignal(0)
@@ -335,18 +396,17 @@ export function WorkspaceCard(props: { api: TuiPluginApi; id: string }) {
 }
 
 /**
- * A single growth-reactive creature: Unicode frames cycled by the shared tick
- * while working, static frame when idle. Stage derives from context percent.
+ * A single growth-reactive creature: multi-line ASCII frames cycled by the shared
+ * tick while working, static frame when idle. Stage derives from total message count.
  */
-export function Creature(props: { api: TuiPluginApi; name: string; percent: number | undefined; working: boolean; growthKey: string }) {
+export function Creature(props: { api: TuiPluginApi; name: string; count: number; working: boolean; growthKey: string }) {
   const theme = () => props.api.theme.current
   useCreatureAnimation(() => props.working)
-  const stage = createMemo(() => growthStage(props.growthKey, props.percent))
-  const frame = () => props.working ? creatureFrame() % 2 : 0
-  return <box flexDirection="row">
-    <text fg={props.working ? theme().accent : theme().textMuted}><b>{stage().frames[frame()]}</b></text>
-    <text fg={theme().text}> {props.name}</text>
-    <text fg={theme().textMuted}> · {stage().name}{props.percent !== undefined ? ` ${props.percent}%` : ""}{props.working ? "" : " · idle"}</text>
+  const stage = createMemo(() => growthStage(props.growthKey, props.count))
+  const frame = () => stage().frames[props.working ? creatureFrame() % 2 : 0]
+  return <box flexDirection="column">
+    <text fg={theme().text}><b>{props.name}</b><span style={{ fg: theme().textMuted }}> · {stage().name}{props.working ? "" : " · idle"}</span></text>
+    <For each={frame()}>{(line) => <text fg={props.working ? theme().accent : theme().textMuted}>{line}</text>}</For>
   </box>
 }
 
@@ -356,11 +416,11 @@ export function CreatureCard(props: { api: TuiPluginApi; id: string }) {
   const main = createMemo(() => sessionMetrics(props.api, props.id))
   const agents = retainActivity(() => activity().agents, (agent) => agent.id, () => props.id)
   const mainWorking = () => activity().status?.type === "busy" || activity().status?.type === "retry"
-  return <InfoCard api={props.api} name="creatures" title="Creatures" initialOpen summary={`${agents().length + 1} creatures · grow with context`}>
-    <Creature api={props.api} growthKey={`main:${props.id}`} name={main().agent ?? "Main"} percent={main().percent} working={mainWorking()} />
+  return <InfoCard api={props.api} name="creatures" title="Creatures" initialOpen summary={`${agents().length + 1} creatures · grow with messages`}>
+    <Creature api={props.api} growthKey={`main:${props.id}`} name={main().agent ?? "Main"} count={main().count} working={mainWorking()} />
     <For each={agents()}>{(row) => {
       const detail = createMemo(() => sessionMetrics(props.api, row.item.id))
-      return <Creature api={props.api} growthKey={`agent:${row.item.id}`} name={row.item.name} percent={detail().percent} working={row.ended === undefined} />
+      return <Creature api={props.api} growthKey={`agent:${row.item.id}`} name={row.item.name} count={detail().count} working={row.ended === undefined} />
     }}</For>
   </InfoCard>
 }

@@ -32,6 +32,7 @@ export function sessionMetrics(api: TuiPluginApi, id: string) {
     model: model ?? "Waiting for response",
     provider: provider ?? "No usage yet",
     agent: latest?.role === "assistant" ? latest.agent : undefined,
+    count: messages.length,
     used,
     percent: used !== undefined && limit && limit > 0 ? Math.round(used / limit * 100) : undefined,
     cost: messages.reduce((total, message) => total + (message.role === "assistant" ? message.cost : 0), 0),
