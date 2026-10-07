@@ -532,6 +532,7 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
         <text fg={theme().text} wrapMode="char"><b>{data().model}</b></text>
         <text fg={theme().textMuted}>{data().agent ?? "New session"} · {activity().status?.type === "busy" ? "Working" : activity().status?.type === "retry" ? "Retrying" : "Ready"}</text>
       </box>
+      <CreatureCard api={props.api} id={props.id} />
       <ObservedWait reason={waitingReason(props.api, props.id, activity())} session={props.id} />
       <box>
         <AsyncIdentity api={props.api} id={props.id} />
@@ -542,7 +543,6 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
           <Show when={agents().length > limit()}><text fg={theme().textMuted}>+{agents().length - limit()} more agents</text></Show>
         </Show>
       </box>
-      <CreatureCard api={props.api} id={props.id} />
       <Show when={activity().attention > 0}>
         <box>
           <text fg={theme().warning}><b>Needs answer · {activity().attention}</b></text>

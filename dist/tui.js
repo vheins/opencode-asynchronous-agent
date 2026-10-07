@@ -1056,6 +1056,14 @@ function Overview(props) {
       var _c$4 = _$memo(() => activity().status?.type === "busy");
       return () => _c$4() ? "Working" : activity().status?.type === "retry" ? "Retrying" : "Ready";
     })(), null);
+    _$insert(_el$63, _$createComponent(CreatureCard, {
+      get api() {
+        return props.api;
+      },
+      get id() {
+        return props.id;
+      }
+    }), _el$69);
     _$insert(_el$63, _$createComponent(ObservedWait, {
       get reason() {
         return waitingReason(props.api, props.id, activity());
@@ -1105,14 +1113,6 @@ function Overview(props) {
             return _el$70;
           }
         })];
-      }
-    }), null);
-    _$insert(_el$63, _$createComponent(CreatureCard, {
-      get api() {
-        return props.api;
-      },
-      get id() {
-        return props.id;
       }
     }), null);
     _$insert(_el$63, _$createComponent(Show, {
