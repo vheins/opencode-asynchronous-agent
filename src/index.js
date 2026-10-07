@@ -34,7 +34,19 @@
  *   OPENCODE_AUTO_BG_EXCEPT=x,y             Never background when the parent
  *                                           agent is in this list.
  *   OPENCODE_AUTO_BG_DEBUG=1                Log each rewrite to stderr.
+ *
+ * ── Subagent status tool (opt-in) ───────────────────────────────────────────
+ *   OPENCODE_SUBAGENT_STATUS=1              Register the `subagent_status` tool
+ *                                           (running/done/error/stale tracking).
+ *   OPENCODE_SUBAGENT_STALE_MS=120000       Age after which a still-running
+ *                                           child is reported as stale.
+ *
+ * The tool is only registered on the V1 entrypoint, which is the only plugin
+ * surface that supports custom-tool and event registration. On V2 the request
+ * degrades gracefully with a one-line stderr hint.
  */
+
+import { createSubagentStatus, statusEnabled } from "./subagent-status.js"
 
 /** Stable plugin identifier. */
 export const PLUGIN_ID = "opencode-asynchronous-agent"
@@ -129,11 +141,23 @@ export async function autoBackgroundPluginV1(ctx) {
 
   const directory = ctx?.directory ?? process.cwd()
   const supported = backgroundSupported()
+
+  // Opt-in status tool. Independent of the background flag: it tracks child
+  // sessions from plugin events and reports running/done/error/stale.
+  const status = statusEnabled() ? createSubagentStatus({ client: ctx?.client, directory }) : undefined
+
   if (debugEnabled()) {
     console.error(
       `[opencode-asynchronous-agent] V1 hook active (dir=${directory}, ` +
-        `backgroundSupported=${supported})`,
+        `backgroundSupported=${supported}, statusTool=${Boolean(status)})`,
     )
+  }
+
+  const hooks = {}
+  if (status) {
+    hooks.tool = status.tool
+    hooks.event = status.event
+    hooks.dispose = status.dispose
   }
 
   if (!supported) {
@@ -143,14 +167,14 @@ export async function autoBackgroundPluginV1(ctx) {
         "(or OPENCODE_EXPERIMENTAL=true) before starting OpenCode to enable them. " +
         "Subagents will run in the foreground until then.",
     )
-    return {}
+    return hooks
   }
 
-  return {
-    "tool.execute.before": async (input, output) => {
-      backgroundSubagent(input?.tool, output?.args, input?.agent, input?.sessionID, debugEnabled())
-    },
+  hooks["tool.execute.before"] = async (input, output) => {
+    backgroundSubagent(input?.tool, output?.args, input?.agent, input?.sessionID, debugEnabled())
   }
+
+  return hooks
 }
 
 /**
@@ -161,6 +185,15 @@ export async function autoBackgroundPluginV1(ctx) {
  */
 export async function autoBackgroundSetup(ctx) {
   if (isDisabled()) return
+
+  if (statusEnabled()) {
+    console.error(
+      "[opencode-asynchronous-agent] OPENCODE_SUBAGENT_STATUS is set, but this " +
+        "OpenCode build's V2 plugin API cannot register custom tools or event " +
+        "handlers. The subagent_status tool is unavailable; run OpenCode V1 to " +
+        "use it.",
+    )
+  }
 
   const debug = debugEnabled()
 

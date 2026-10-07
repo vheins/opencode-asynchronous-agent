@@ -152,6 +152,8 @@ All configuration is optional and read from environment variables at setup time.
 | `OPENCODE_AUTO_BG_DEBUG` | *(off)* | Set to `1` to log each rewrite to stderr. |
 | `OPENCODE_SUBAGENT_NOTIFY` | *(enabled)* | TUI monitor only. Set to `0`, `false`, `off`, or `no` to disable the toast shown when a background subagent finishes (`done`/`error`). |
 | `OPENCODE_SUBAGENT_TASK_PROGRESS` | *(off)* | TUI monitor only. Set to a truthy value (`1`, `true`, `on`, …) to show the "Task progress" card. Hidden unless explicitly enabled. |
+| `OPENCODE_SUBAGENT_STATUS` | *(off)* | Opt-in. Set to a truthy value (`1`, `true`, `on`, `yes`) to register the `subagent_status` server tool. |
+| `OPENCODE_SUBAGENT_STALE_MS` | `120000` | Age (ms) after which a still-running child is reported as `stale`. |
 
 > **OpenCode V1 needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`.** V1 gates
 > background subagents behind that flag (or the broader `OPENCODE_EXPERIMENTAL=true`).
@@ -193,6 +195,39 @@ export OPENCODE_AUTO_BG_SUBAGENT=0
 
 ---
 
+## Subagent status tool (opt-in)
+
+OpenCode has no built-in way for an agent to poll the liveness of the background
+subagent sessions it spawned: the model is push-only, so the parent is notified
+only when a child finishes. Set `OPENCODE_SUBAGENT_STATUS=1` to register a
+`subagent_status` server tool that reports every tracked child as
+`running` / `done` / `error` / `stale`.
+
+```sh
+export OPENCODE_SUBAGENT_STATUS=1
+```
+
+The plugin subscribes to session events (`session.created`, `session.status`,
+`session.idle`, `session.error`, `session.deleted`, message updates) and keeps an
+in-memory registry keyed by child session id. A child still marked `running`
+whose last event is older than `OPENCODE_SUBAGENT_STALE_MS` (default `120000`)
+is reported as `stale`.
+
+The tool accepts two optional filters, `parent` (parent session id) and `status`,
+and returns a structured report: per-subagent `sessionID`, `title`, `agent`,
+`parentID`, `status`, `elapsedMs`, `sinceLastEventMs`, and `stale`, plus aggregate
+counts and the active stale threshold. When the registry is still empty it makes a
+best-effort hydration call to `client.session.list()`; if that SDK method is
+unavailable it reports from events only and never fails.
+
+> **V1 only.** Custom tools and plugin event handlers are registered through the
+> V1 `server` entrypoint. The V2 plugin API cannot register either, so when the
+> tool is enabled on V2 the plugin logs a one-line stderr hint and continues. The
+> tool is non-destructive and disposed on unload; the background-forcing hook is
+> unaffected.
+
+---
+
 ## Behaviour notes
 
 - **Explicit wins.** If the caller already set `background` on the tool input, the
@@ -226,6 +261,7 @@ export OPENCODE_AUTO_BG_SUBAGENT=0
 | `index.js` | Alternate directory entrypoint — mirrors `server.js`. |
 | `src/tui.tsx` | Source of the TUI sidebar plugin (InfoCard stack + per-subagent cards + async identity). |
 | `src/model.ts` | Sidebar data helpers: `activityDetail`, `sessionMetrics`, `sidebarActivity`. |
+| `src/subagent-status.js` | Opt-in `subagent_status` tool: in-memory child-session registry, staleness classification, event ingestion. |
 | `src/subagent.ts` | Subagent detail fetch (`fetchSubagent`), summary (`subagentDetails`), duration (`elapsedLabel`). |
 | `src/workspace.ts` | Bounded Git workspace scan for the "Workspace & files" card. |
 | `dist/tui.js` | `./tui` entrypoint — the built TUI sidebar bundle (`bun run build`). |
