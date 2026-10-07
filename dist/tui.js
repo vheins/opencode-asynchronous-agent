@@ -213,6 +213,12 @@ function compact(value) {
     maximumFractionDigits: 1
   }).format(value);
 }
+function createClock(interval = 1000) {
+  const [now, setNow] = createSignal(Date.now());
+  const timer = setInterval(() => setNow(Date.now()), interval);
+  onCleanup(() => clearInterval(timer));
+  return now;
+}
 function navigateToSession(api, target) {
   if (!target || !target.startsWith("ses_"))
     return;
@@ -230,12 +236,27 @@ function childTokens(api, childID) {
 }
 function asyncIdentity(api, id) {
   const tools = api.state.session.messages(id).flatMap((message) => api.state.part(message.id)).filter((part) => part.type === "tool").filter((part) => part.tool === "task" || part.tool === "subagent");
-  const statuses = tools.map((part) => part.state.status === "completed" ? "done" : part.state.status === "error" ? "error" : "running");
+  const live = new Set(sidebarActivity(api, id).agents.map((agent) => agent.id));
+  const rows = tools.map((part) => {
+    const child = part.state.status === "pending" ? undefined : typeof part.state.metadata?.sessionId === "string" ? part.state.metadata.sessionId : undefined;
+    const key = child ?? part.callID;
+    const status = live.has(key) || part.state.status === "running" || part.state.status === "pending" ? "running" : part.state.status === "error" ? "error" : "done";
+    return {
+      id: key,
+      status
+    };
+  });
+  for (const agent of live)
+    if (!rows.some((row) => row.id === agent))
+      rows.push({
+        id: agent,
+        status: "running"
+      });
   return {
-    running: statuses.filter((status) => status === "running").length,
-    done: statuses.filter((status) => status === "done").length,
-    error: statuses.filter((status) => status === "error").length,
-    total: statuses.length
+    running: rows.filter((row) => row.status === "running").length,
+    done: rows.filter((row) => row.status === "done").length,
+    error: rows.filter((row) => row.status === "error").length,
+    total: rows.length
   };
 }
 function subagentToasts(api) {
@@ -368,7 +389,7 @@ function InfoCard(props) {
 function SubagentCard(props) {
   const [data, setData] = createSignal();
   const [error, setError] = createSignal("");
-  const [now, setNow] = createSignal(Date.now());
+  const now = createClock();
   const theme = () => props.api.theme.current;
   createEffect(() => {
     const id = props.agent.id;
@@ -396,14 +417,16 @@ function SubagentCard(props) {
     };
     refresh();
     const poll = ended ? undefined : setInterval(() => void refresh(), 5000);
-    const clock = setInterval(() => setNow(Date.now()), 1000);
     onCleanup(() => {
       controller.abort();
       clearInterval(poll);
-      clearInterval(clock);
     });
   });
-  const elapsed = () => (data()?.started ?? 0) > 0 ? Math.max(0, (props.ended ?? now()) - data().started) : 0;
+  const started = () => props.api.state.session.get(props.agent.id)?.time.created ?? data()?.started;
+  const elapsed = () => {
+    const start = started();
+    return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, (props.ended ?? now()) - start) : 0;
+  };
   const tokens = () => childTokens(props.api, props.agent.id);
   const rate = () => {
     const value = tokens();
@@ -423,7 +446,7 @@ function SubagentCard(props) {
     onActivate: () => navigateToSession(props.api, props.agent.id),
     get summary() {
       return `${data()?.model ?? "Memuat model\u2026"}
-${elapsedLabel(data()?.started, props.ended ?? now())}${tokens() === undefined ? "" : ` \xB7 ${compact(tokens())} tok`}${rate() === undefined ? "" : ` \xB7 ${rate().toFixed(1)} t/s`}`;
+${elapsedLabel(started(), props.ended ?? now())}${tokens() === undefined ? "" : ` \xB7 ${compact(tokens())} tok`}${rate() === undefined ? "" : ` \xB7 ${rate().toFixed(1)} t/s`}`;
     },
     get children() {
       return [_$createComponent(Show, {
@@ -751,7 +774,6 @@ function Overview(props) {
   const activity = createMemo(() => sidebarActivity(props.api, props.id));
   const calls = createMemo(() => new Map(props.api.state.session.messages(props.id).flatMap((message) => props.api.state.part(message.id).filter((part) => part.type === "tool")).map((part) => [part.callID, part])));
   const detail = (tool) => activityDetail(calls().get(tool.callID) ?? tool);
-  const mcp = retainActivity(() => activity().mcp, (server) => server.name, () => props.id);
   const agents = retainActivity(() => activity().agents, (agent) => agent.id, () => props.id);
   const tools = retainActivity(() => activity().tools, (tool) => tool.callID, () => props.id);
   const size = useTerminalDimensions();
@@ -852,107 +874,6 @@ function Overview(props) {
       get api() {
         return props.api;
       },
-      name: "connections",
-      title: "Koneksi MCP",
-      initialOpen: true,
-      get summary() {
-        return `${props.api.state.mcp().filter((server) => server.status === "connected").length}/${props.api.state.mcp().length} terhubung \xB7 ${activity().mcp.length} sedang dipakai`;
-      },
-      get children() {
-        return [_$createComponent(Show, {
-          get when() {
-            return mcp().length > 0;
-          },
-          get children() {
-            var _el$63 = _$createElement("box"), _el$64 = _$createElement("text"), _el$65 = _$createElement("b");
-            _$insertNode(_el$63, _el$64);
-            _$insertNode(_el$64, _el$65);
-            _$insertNode(_el$65, _$createTextNode(`MCP sedang dipakai / terakhir`));
-            _$insert(_el$63, _$createComponent(For, {
-              get each() {
-                return mcp().slice(0, limit());
-              },
-              children: (row) => (() => {
-                var _el$85 = _$createElement("box"), _el$86 = _$createElement("text"), _el$87 = _$createTextNode(` \xB7 `);
-                _$insertNode(_el$85, _el$86);
-                _$insertNode(_el$86, _el$87);
-                _$setProp(_el$86, "wrapMode", "char");
-                _$insert(_el$86, () => row.item.name, _el$87);
-                _$insert(_el$86, (() => {
-                  var _c$8 = _$memo(() => row.ended === undefined);
-                  return () => _c$8() ? `${row.item.calls.length} panggilan` : "Baru berakhir";
-                })(), null);
-                _$insert(_el$85, _$createComponent(For, {
-                  get each() {
-                    return row.item.calls.slice(0, 2);
-                  },
-                  children: (call) => (() => {
-                    var _el$88 = _$createElement("text"), _el$89 = _$createTextNode(` \xB7 `);
-                    _$insertNode(_el$88, _el$89);
-                    _$setProp(_el$88, "wrapMode", "word");
-                    _$insert(_el$88, () => detail(call).status, _el$89);
-                    _$insert(_el$88, () => detail(call).action, null);
-                    _$insert(_el$88, (() => {
-                      var _c$9 = _$memo(() => !!detail(call).target);
-                      return () => _c$9() ? ` \xB7 ${detail(call).target}` : "";
-                    })(), null);
-                    _$effect((_$p) => _$setProp(_el$88, "fg", theme().textMuted, _$p));
-                    return _el$88;
-                  })()
-                }), null);
-                _$effect((_$p) => _$setProp(_el$86, "fg", theme().text, _$p));
-                return _el$85;
-              })()
-            }), null);
-            _$insert(_el$63, _$createComponent(Show, {
-              get when() {
-                return mcp().length > limit();
-              },
-              get children() {
-                var _el$67 = _$createElement("text"), _el$68 = _$createTextNode(`+`), _el$69 = _$createTextNode(` MCP lainnya`);
-                _$insertNode(_el$67, _el$68);
-                _$insertNode(_el$67, _el$69);
-                _$insert(_el$67, () => mcp().length - limit(), _el$69);
-                _$effect((_$p) => _$setProp(_el$67, "fg", theme().textMuted, _$p));
-                return _el$67;
-              }
-            }), null);
-            _$effect((_$p) => _$setProp(_el$64, "fg", theme().primary, _$p));
-            return _el$63;
-          }
-        }), _$createComponent(For, {
-          get each() {
-            return props.api.state.mcp().filter((server) => !mcp().some((row) => row.item.name === server.name));
-          },
-          children: (server) => (() => {
-            var _el$90 = _$createElement("text"), _el$91 = _$createTextNode(` \xB7 `);
-            _$insertNode(_el$90, _el$91);
-            _$setProp(_el$90, "wrapMode", "char");
-            _$insert(_el$90, () => server.name, _el$91);
-            _$insert(_el$90, (() => {
-              var _c$0 = _$memo(() => server.status === "connected");
-              return () => _c$0() ? "Terhubung \xB7 tidak sedang dipakai" : server.status;
-            })(), null);
-            _$effect((_$p) => _$setProp(_el$90, "fg", server.status === "connected" ? theme().textMuted : theme().warning, _$p));
-            return _el$90;
-          })()
-        }), _$createComponent(Show, {
-          get when() {
-            return !props.api.state.mcp().length;
-          },
-          get children() {
-            var _el$70 = _$createElement("text");
-            _$insertNode(_el$70, _$createTextNode(`Tidak ada server MCP.`));
-            _$effect((_$p) => _$setProp(_el$70, "fg", theme().textMuted, _$p));
-            return _el$70;
-          }
-        })];
-      }
-    }), null);
-    _$insert(_el$47, _$createComponent(InfoCard, {
-      get api() {
-        return props.api;
-      },
       name: "result",
       title: "Aktivitas & hasil",
       initialOpen: true,
@@ -965,82 +886,82 @@ function Overview(props) {
             return tools().length > 0;
           },
           get children() {
-            var _el$72 = _$createElement("box");
-            _$insert(_el$72, _$createComponent(For, {
+            var _el$63 = _$createElement("box");
+            _$insert(_el$63, _$createComponent(For, {
               get each() {
                 return tools().slice(0, limit());
               },
               children: (row) => (() => {
-                var _el$92 = _$createElement("box"), _el$93 = _$createElement("text"), _el$94 = _$createTextNode(` \xB7 `);
-                _$insertNode(_el$92, _el$93);
-                _$insertNode(_el$93, _el$94);
-                _$setProp(_el$93, "wrapMode", "word");
-                _$insert(_el$93, () => detail(row.item).action, _el$94);
-                _$insert(_el$93, () => detail(row.item).status, null);
-                _$insert(_el$93, (() => {
-                  var _c$1 = _$memo(() => !!detail(row.item).target);
-                  return () => _c$1() ? ` \xB7 ${detail(row.item).target}` : "";
+                var _el$76 = _$createElement("box"), _el$77 = _$createElement("text"), _el$78 = _$createTextNode(` \xB7 `);
+                _$insertNode(_el$76, _el$77);
+                _$insertNode(_el$77, _el$78);
+                _$setProp(_el$77, "wrapMode", "word");
+                _$insert(_el$77, () => detail(row.item).action, _el$78);
+                _$insert(_el$77, () => detail(row.item).status, null);
+                _$insert(_el$77, (() => {
+                  var _c$8 = _$memo(() => !!detail(row.item).target);
+                  return () => _c$8() ? ` \xB7 ${detail(row.item).target}` : "";
                 })(), null);
-                _$insert(_el$92, _$createComponent(Show, {
+                _$insert(_el$76, _$createComponent(Show, {
                   get when() {
                     return detail(row.item).result;
                   },
                   get children() {
-                    var _el$95 = _$createElement("text");
-                    _$setProp(_el$95, "wrapMode", "word");
-                    _$insert(_el$95, () => detail(row.item).result);
-                    _$effect((_$p) => _$setProp(_el$95, "fg", theme().textMuted, _$p));
-                    return _el$95;
+                    var _el$79 = _$createElement("text");
+                    _$setProp(_el$79, "wrapMode", "word");
+                    _$insert(_el$79, () => detail(row.item).result);
+                    _$effect((_$p) => _$setProp(_el$79, "fg", theme().textMuted, _$p));
+                    return _el$79;
                   }
                 }), null);
-                _$effect((_$p) => _$setProp(_el$93, "fg", theme().text, _$p));
-                return _el$92;
+                _$effect((_$p) => _$setProp(_el$77, "fg", theme().text, _$p));
+                return _el$76;
               })()
             }), null);
-            _$insert(_el$72, _$createComponent(Show, {
+            _$insert(_el$63, _$createComponent(Show, {
               get when() {
                 return tools().length > limit();
               },
               get children() {
-                var _el$73 = _$createElement("text"), _el$74 = _$createTextNode(`+`), _el$75 = _$createTextNode(` tool lainnya`);
-                _$insertNode(_el$73, _el$74);
-                _$insertNode(_el$73, _el$75);
-                _$insert(_el$73, () => tools().length - limit(), _el$75);
-                _$effect((_$p) => _$setProp(_el$73, "fg", theme().textMuted, _$p));
-                return _el$73;
+                var _el$64 = _$createElement("text"), _el$65 = _$createTextNode(`+`), _el$66 = _$createTextNode(` tool lainnya`);
+                _$insertNode(_el$64, _el$65);
+                _$insertNode(_el$64, _el$66);
+                _$insert(_el$64, () => tools().length - limit(), _el$66);
+                _$effect((_$p) => _$setProp(_el$64, "fg", theme().textMuted, _$p));
+                return _el$64;
               }
             }), null);
-            return _el$72;
+            return _el$63;
           }
         }), _$createComponent(Show, {
           get when() {
-            return _$memo(() => !!(activity().latest && !tools().slice(0, limit()).some((row) => row.item.callID === activity().latest?.callID) && !mcp().some((row) => row.item.calls.some((call) => call.callID === activity().latest?.callID)) && !["task", "subagent"].includes(activity().latest.tool)))() ? activity().latest : undefined;
+            return _$memo(() => !!(activity().latest && !tools().slice(0, limit()).some((row) => row.item.callID === activity().latest?.callID) && !activity().mcp.some((server) => server.calls.some((call) => call.callID === activity().latest?.callID)) && !["task", "subagent"].includes(activity().latest.tool)))() ? activity().latest : undefined;
           },
           children: (latest) => (() => {
-            var _el$96 = _$createElement("box"), _el$97 = _$createElement("text"), _el$98 = _$createElement("text");
-            _$insertNode(_el$96, _el$97);
-            _$insertNode(_el$96, _el$98);
-            _$setProp(_el$97, "wrapMode", "word");
-            _$insert(_el$97, () => activityDetail(latest()).target || activityDetail(latest()).action);
-            _$setProp(_el$98, "wrapMode", "word");
-            _$insert(_el$98, () => activityDetail(latest()).result || "Masih diproses; belum ada hasil akhir.");
+            var _el$80 = _$createElement("box"), _el$81 = _$createElement("text"), _el$82 = _$createElement("text");
+            _$insertNode(_el$80, _el$81);
+            _$insertNode(_el$80, _el$82);
+            _$setProp(_el$81, "wrapMode", "word");
+            _$insert(_el$81, () => activityDetail(latest()).target || activityDetail(latest()).action);
+            _$setProp(_el$82, "wrapMode", "word");
+            _$insert(_el$82, () => activityDetail(latest()).result || "Masih diproses; belum ada hasil akhir.");
             _$effect((_p$) => {
               var _v$14 = theme().text, _v$15 = theme().textMuted;
-              _v$14 !== _p$.e && (_p$.e = _$setProp(_el$97, "fg", _v$14, _p$.e));
-              _v$15 !== _p$.t && (_p$.t = _$setProp(_el$98, "fg", _v$15, _p$.t));
+              _v$14 !== _p$.e && (_p$.e = _$setProp(_el$81, "fg", _v$14, _p$.e));
+              _v$15 !== _p$.t && (_p$.t = _$setProp(_el$82, "fg", _v$15, _p$.t));
               return _p$;
             }, {
               e: undefined,
               t: undefined
             });
-            return _el$96;
+            return _el$80;
           })()
         }), (() => {
-          var _el$76 = _$createElement("text");
-          _$insertNode(_el$76, _$createTextNode(`Hasil tes: lihat keluaran pengujian di percakapan; status tool bukan bukti tes lulus.`));
-          _$setProp(_el$76, "wrapMode", "word");
-          _$effect((_$p) => _$setProp(_el$76, "fg", theme().textMuted, _$p));
-          return _el$76;
+          var _el$67 = _$createElement("text");
+          _$insertNode(_el$67, _$createTextNode(`Hasil tes: lihat keluaran pengujian di percakapan; status tool bukan bukti tes lulus.`));
+          _$setProp(_el$67, "wrapMode", "word");
+          _$effect((_$p) => _$setProp(_el$67, "fg", theme().textMuted, _$p));
+          return _el$67;
         })()];
       }
     }), null);
@@ -1054,23 +975,23 @@ function Overview(props) {
         return _$memo(() => data().used === undefined)() ? "Token belum dilaporkan" : `${compact(data().used ?? NaN)} token \xB7 ${data().percent === undefined ? "konteks \u2014" : `${data().percent}% konteks`} \xB7 $${data().cost.toFixed(4)}`;
       },
       get children() {
-        var _el$78 = _$createElement("text"), _el$79 = _$createTextNode(` \xB7 `), _el$80 = _$createTextNode(` \xB7 `), _el$81 = _$createTextNode(` \xB7 $`);
-        _$insertNode(_el$78, _el$79);
-        _$insertNode(_el$78, _el$80);
-        _$insertNode(_el$78, _el$81);
-        _$setProp(_el$78, "wrapMode", "char");
-        _$insert(_el$78, () => data().provider, _el$79);
-        _$insert(_el$78, (() => {
+        var _el$69 = _$createElement("text"), _el$70 = _$createTextNode(` \xB7 `), _el$71 = _$createTextNode(` \xB7 `), _el$72 = _$createTextNode(` \xB7 $`);
+        _$insertNode(_el$69, _el$70);
+        _$insertNode(_el$69, _el$71);
+        _$insertNode(_el$69, _el$72);
+        _$setProp(_el$69, "wrapMode", "char");
+        _$insert(_el$69, () => data().provider, _el$70);
+        _$insert(_el$69, (() => {
           var _c$6 = _$memo(() => data().used === undefined);
           return () => _c$6() ? "\u2014 token" : `${compact(data().used ?? NaN)} token`;
-        })(), _el$80);
-        _$insert(_el$78, (() => {
+        })(), _el$71);
+        _$insert(_el$69, (() => {
           var _c$7 = _$memo(() => data().percent === undefined);
           return () => _c$7() ? "konteks belum diukur" : `${data().percent}% konteks`;
-        })(), _el$81);
-        _$insert(_el$78, () => data().cost.toFixed(4), null);
-        _$effect((_$p) => _$setProp(_el$78, "fg", theme().textMuted, _$p));
-        return _el$78;
+        })(), _el$72);
+        _$insert(_el$69, () => data().cost.toFixed(4), null);
+        _$effect((_$p) => _$setProp(_el$69, "fg", theme().textMuted, _$p));
+        return _el$69;
       }
     }), null);
     _$insert(_el$47, _$createComponent(InfoCard, {
@@ -1090,21 +1011,21 @@ function Overview(props) {
           },
           get fallback() {
             return (() => {
-              var _el$99 = _$createElement("text");
-              _$insertNode(_el$99, _$createTextNode(`Belum ada daftar tugas di sesi ini.`));
-              _$effect((_$p) => _$setProp(_el$99, "fg", theme().textMuted, _$p));
-              return _el$99;
+              var _el$83 = _$createElement("text");
+              _$insertNode(_el$83, _$createTextNode(`Belum ada daftar tugas di sesi ini.`));
+              _$effect((_$p) => _$setProp(_el$83, "fg", theme().textMuted, _$p));
+              return _el$83;
             })();
           },
           get children() {
             return [(() => {
-              var _el$82 = _$createElement("text"), _el$83 = _$createTextNode(` berjalan \xB7 `), _el$84 = _$createTextNode(` antre`);
-              _$insertNode(_el$82, _el$83);
-              _$insertNode(_el$82, _el$84);
-              _$insert(_el$82, () => activity().todos.filter((todo) => todo.status === "in_progress").length, _el$83);
-              _$insert(_el$82, () => activity().todos.filter((todo) => todo.status === "pending").length, _el$84);
-              _$effect((_$p) => _$setProp(_el$82, "fg", theme().textMuted, _$p));
-              return _el$82;
+              var _el$73 = _$createElement("text"), _el$74 = _$createTextNode(` berjalan \xB7 `), _el$75 = _$createTextNode(` antre`);
+              _$insertNode(_el$73, _el$74);
+              _$insertNode(_el$73, _el$75);
+              _$insert(_el$73, () => activity().todos.filter((todo) => todo.status === "in_progress").length, _el$74);
+              _$insert(_el$73, () => activity().todos.filter((todo) => todo.status === "pending").length, _el$75);
+              _$effect((_$p) => _$setProp(_el$73, "fg", theme().textMuted, _$p));
+              return _el$73;
             })(), _$createComponent(For, {
               get each() {
                 return [...props.api.state.session.todo(props.id)].sort((a, b) => ({
@@ -1118,26 +1039,26 @@ function Overview(props) {
                 }[b.status] ?? 3));
               },
               children: (todo) => (() => {
-                var _el$101 = _$createElement("box"), _el$102 = _$createElement("text"), _el$103 = _$createElement("text");
-                _$insertNode(_el$101, _el$102);
-                _$insertNode(_el$101, _el$103);
-                _$setProp(_el$101, "marginTop", 1);
-                _$insert(_el$102, (() => {
-                  var _c$10 = _$memo(() => todo.status === "completed");
-                  return () => _c$10() ? "\u2713 Selesai" : todo.status === "in_progress" ? "\u203A Sedang dikerjakan" : "\xB7 Menunggu";
+                var _el$85 = _$createElement("box"), _el$86 = _$createElement("text"), _el$87 = _$createElement("text");
+                _$insertNode(_el$85, _el$86);
+                _$insertNode(_el$85, _el$87);
+                _$setProp(_el$85, "marginTop", 1);
+                _$insert(_el$86, (() => {
+                  var _c$9 = _$memo(() => todo.status === "completed");
+                  return () => _c$9() ? "\u2713 Selesai" : todo.status === "in_progress" ? "\u203A Sedang dikerjakan" : "\xB7 Menunggu";
                 })());
-                _$setProp(_el$103, "wrapMode", "word");
-                _$insert(_el$103, () => todo.content);
+                _$setProp(_el$87, "wrapMode", "word");
+                _$insert(_el$87, () => todo.content);
                 _$effect((_p$) => {
                   var _v$16 = todo.status === "in_progress" ? theme().primary : theme().textMuted, _v$17 = todo.status === "completed" ? theme().textMuted : theme().text;
-                  _v$16 !== _p$.e && (_p$.e = _$setProp(_el$102, "fg", _v$16, _p$.e));
-                  _v$17 !== _p$.t && (_p$.t = _$setProp(_el$103, "fg", _v$17, _p$.t));
+                  _v$16 !== _p$.e && (_p$.e = _$setProp(_el$86, "fg", _v$16, _p$.e));
+                  _v$17 !== _p$.t && (_p$.t = _$setProp(_el$87, "fg", _v$17, _p$.t));
                   return _p$;
                 }, {
                   e: undefined,
                   t: undefined
                 });
-                return _el$101;
+                return _el$85;
               })()
             })];
           }
@@ -1175,17 +1096,20 @@ function ResponsiveDock(props) {
   const data = createMemo(() => sessionMetrics(props.api, props.id));
   const identity = createMemo(() => asyncIdentity(props.api, props.id));
   const theme = () => props.api.theme.current;
+  const state = () => activity().attention > 0 ? `${activity().attention} menunggu jawaban` : activity().status?.type === "busy" ? "Bekerja" : activity().status?.type === "retry" ? "Mencoba ulang" : "Siap";
+  const latest = () => activity().latest ? `${activityDetail(activity().latest).status} \xB7 ${activityDetail(activity().latest).action}` : "Belum ada aktivitas tool";
+  const target = () => activity().latest ? activityDetail(activity().latest).target : "";
   const open = () => props.api.ui.dialog.replace(() => _$createComponent(props.api.ui.Dialog, {
     onClose: () => props.api.ui.dialog.clear(),
     get children() {
-      var _el$104 = _$createElement("box"), _el$105 = _$createElement("text"), _el$106 = _$createElement("b"), _el$108 = _$createTextNode(` \xB7 Esc tutup`), _el$109 = _$createElement("scrollbox");
-      _$insertNode(_el$104, _el$105);
-      _$insertNode(_el$104, _el$109);
-      _$setProp(_el$104, "padding", 1);
-      _$insertNode(_el$105, _el$106);
-      _$insertNode(_el$105, _el$108);
-      _$insertNode(_el$106, _$createTextNode(`Studio \xB7 Detail sesi`));
-      _$insert(_el$109, _$createComponent(Overview, {
+      var _el$88 = _$createElement("box"), _el$89 = _$createElement("text"), _el$90 = _$createElement("b"), _el$92 = _$createTextNode(` \xB7 Esc tutup`), _el$93 = _$createElement("scrollbox");
+      _$insertNode(_el$88, _el$89);
+      _$insertNode(_el$88, _el$93);
+      _$setProp(_el$88, "padding", 1);
+      _$insertNode(_el$89, _el$90);
+      _$insertNode(_el$89, _el$92);
+      _$insertNode(_el$90, _$createTextNode(`Studio \xB7 Detail sesi`));
+      _$insert(_el$93, _$createComponent(Overview, {
         get api() {
           return props.api;
         },
@@ -1196,14 +1120,14 @@ function ResponsiveDock(props) {
       }));
       _$effect((_p$) => {
         var _v$18 = theme().primary, _v$19 = Math.max(5, size().height - 10);
-        _v$18 !== _p$.e && (_p$.e = _$setProp(_el$105, "fg", _v$18, _p$.e));
-        _v$19 !== _p$.t && (_p$.t = _$setProp(_el$109, "height", _v$19, _p$.t));
+        _v$18 !== _p$.e && (_p$.e = _$setProp(_el$89, "fg", _v$18, _p$.e));
+        _v$19 !== _p$.t && (_p$.t = _$setProp(_el$93, "height", _v$19, _p$.t));
         return _p$;
       }, {
         e: undefined,
         t: undefined
       });
-      return _el$104;
+      return _el$88;
     }
   }));
   const unregister = props.api.command?.register(() => [{
@@ -1222,90 +1146,71 @@ function ResponsiveDock(props) {
       return !props.sidebarVisible;
     },
     get children() {
-      var _el$110 = _$createElement("box"), _el$111 = _$createElement("box"), _el$112 = _$createElement("text"), _el$113 = _$createElement("b"), _el$114 = _$createTextNode(`ASYNC \xB7 `), _el$115 = _$createElement("text"), _el$116 = _$createElement("text"), _el$117 = _$createElement("text"), _el$118 = _$createTextNode(`\u25CF `), _el$119 = _$createTextNode(` run \xB7 \u2713 `), _el$120 = _$createTextNode(` done \xB7 \u2715 `), _el$121 = _$createTextNode(` err \xB7 \u03A3 `), _el$122 = _$createElement("text"), _el$123 = _$createElement("text"), _el$124 = _$createElement("box"), _el$125 = _$createElement("text");
-      _$insertNode(_el$110, _el$111);
-      _$setProp(_el$110, "flexDirection", "row");
-      _$setProp(_el$110, "width", "100%");
-      _$setProp(_el$110, "height", 8);
-      _$setProp(_el$110, "flexShrink", 0);
-      _$setProp(_el$110, "gap", 1);
-      _$setProp(_el$110, "paddingLeft", 1);
-      _$setProp(_el$110, "paddingRight", 1);
-      _$insertNode(_el$111, _el$112);
-      _$insertNode(_el$111, _el$115);
-      _$insertNode(_el$111, _el$116);
-      _$insertNode(_el$111, _el$117);
-      _$insertNode(_el$111, _el$122);
-      _$insertNode(_el$111, _el$123);
-      _$insertNode(_el$111, _el$124);
-      _$setProp(_el$111, "flexGrow", 1);
-      _$setProp(_el$111, "minWidth", 0);
-      _$setProp(_el$111, "flexShrink", 1);
-      _$insertNode(_el$112, _el$113);
-      _$setProp(_el$112, "height", 1);
-      _$insertNode(_el$113, _el$114);
-      _$insert(_el$113, () => data().agent ?? "Sesi", null);
-      _$setProp(_el$115, "height", 1);
-      _$insert(_el$115, (() => {
-        var _c$11 = _$memo(() => !!activity().attention);
-        return () => _c$11() ? `${activity().attention} permintaan menunggu jawaban` : _$memo(() => identity().running > 0)() ? `${identity().running} subagent berjalan` : "Siap";
-      })());
-      _$setProp(_el$116, "height", 1);
-      _$insert(_el$116, () => data().model, null);
-      _$insert(_el$116, (() => {
-        var _c$12 = _$memo(() => data().used === undefined);
-        return () => _c$12() ? "" : ` \xB7 ${compact(data().used ?? NaN)} token (laporan)`;
-      })(), null);
-      _$insertNode(_el$117, _el$118);
-      _$insertNode(_el$117, _el$119);
-      _$insertNode(_el$117, _el$120);
-      _$insertNode(_el$117, _el$121);
-      _$setProp(_el$117, "height", 1);
-      _$insert(_el$117, () => identity().running, _el$119);
-      _$insert(_el$117, () => identity().done, _el$120);
-      _$insert(_el$117, () => identity().error, _el$121);
-      _$insert(_el$117, () => identity().total, null);
-      _$setProp(_el$122, "height", 1);
-      _$insert(_el$122, (() => {
-        var _c$13 = _$memo(() => !!activity().latest);
-        return () => _c$13() ? `${activityDetail(activity().latest).status} \xB7 ${activityDetail(activity().latest).action}` : "Belum ada aktivitas tool";
-      })());
-      _$setProp(_el$123, "height", 1);
-      _$insert(_el$123, (() => {
-        var _c$14 = _$memo(() => !!activity().latest);
-        return () => _c$14() ? activityDetail(activity().latest).target : "";
-      })());
-      _$insertNode(_el$124, _el$125);
-      _$setProp(_el$124, "onMouseDown", (event) => {
+      var _el$94 = _$createElement("box"), _el$95 = _$createElement("text"), _el$96 = _$createElement("b"), _el$97 = _$createTextNode(`ASYNC \xB7 `), _el$98 = _$createElement("span"), _el$99 = _$createTextNode(` | `), _el$100 = _$createTextNode(` | `), _el$101 = _$createTextNode(` | \u25CF `), _el$102 = _$createTextNode(` run \xB7 \u2713 `), _el$103 = _$createTextNode(` done \xB7 \u2715 `), _el$104 = _$createTextNode(` err \xB7 \u03A3 `), _el$105 = _$createTextNode(` | `), _el$106 = _$createElement("span"), _el$107 = _$createTextNode(` | `), _el$108 = _$createElement("span");
+      _$insertNode(_el$94, _el$95);
+      _$setProp(_el$94, "width", "100%");
+      _$setProp(_el$94, "flexShrink", 0);
+      _$setProp(_el$94, "paddingLeft", 1);
+      _$setProp(_el$94, "paddingRight", 1);
+      _$setProp(_el$94, "onMouseDown", (event) => {
         if (event.button === 0) {
           event.stopPropagation();
           open();
         }
       });
-      _$insertNode(_el$125, _$createTextNode(`/studio-panel \xB7 detail`));
-      _$setProp(_el$125, "height", 1);
+      _$insertNode(_el$95, _el$96);
+      _$insertNode(_el$95, _el$98);
+      _$insertNode(_el$95, _el$106);
+      _$insertNode(_el$95, _el$108);
+      _$setProp(_el$95, "wrapMode", "word");
+      _$insertNode(_el$96, _el$97);
+      _$insert(_el$96, () => data().agent ?? "Sesi", null);
+      _$insertNode(_el$98, _el$99);
+      _$insertNode(_el$98, _el$100);
+      _$insertNode(_el$98, _el$101);
+      _$insertNode(_el$98, _el$102);
+      _$insertNode(_el$98, _el$103);
+      _$insertNode(_el$98, _el$104);
+      _$insertNode(_el$98, _el$105);
+      _$insert(_el$98, state, _el$100);
+      _$insert(_el$98, () => data().model, _el$101);
+      _$insert(_el$98, (() => {
+        var _c$0 = _$memo(() => data().used === undefined);
+        return () => _c$0() ? "" : ` \xB7 ${compact(data().used ?? NaN)} token`;
+      })(), _el$101);
+      _$insert(_el$98, () => identity().running, _el$102);
+      _$insert(_el$98, () => identity().done, _el$103);
+      _$insert(_el$98, () => identity().error, _el$104);
+      _$insert(_el$98, () => identity().total, _el$105);
+      _$insertNode(_el$106, _el$107);
+      _$insert(_el$106, latest, _el$107);
+      _$insert(_el$106, (() => {
+        var _c$1 = _$memo(() => !!target());
+        return () => _c$1() ? ` \xB7 ${target()}` : "";
+      })(), _el$107);
+      _$insertNode(_el$108, _$createTextNode(`/studio-panel \xB7 detail`));
       _$effect((_p$) => {
-        var _v$20 = theme().backgroundPanel, _v$21 = theme().primary, _v$22 = theme().text, _v$23 = theme().textMuted, _v$24 = theme().text, _v$25 = theme().text, _v$26 = theme().textMuted, _v$27 = theme().primary;
-        _v$20 !== _p$.e && (_p$.e = _$setProp(_el$110, "backgroundColor", _v$20, _p$.e));
-        _v$21 !== _p$.t && (_p$.t = _$setProp(_el$112, "fg", _v$21, _p$.t));
-        _v$22 !== _p$.a && (_p$.a = _$setProp(_el$115, "fg", _v$22, _p$.a));
-        _v$23 !== _p$.o && (_p$.o = _$setProp(_el$116, "fg", _v$23, _p$.o));
-        _v$24 !== _p$.i && (_p$.i = _$setProp(_el$117, "fg", _v$24, _p$.i));
-        _v$25 !== _p$.n && (_p$.n = _$setProp(_el$122, "fg", _v$25, _p$.n));
-        _v$26 !== _p$.s && (_p$.s = _$setProp(_el$123, "fg", _v$26, _p$.s));
-        _v$27 !== _p$.h && (_p$.h = _$setProp(_el$125, "fg", _v$27, _p$.h));
+        var _v$20 = theme().backgroundPanel, _v$21 = theme().text, _v$22 = {
+          fg: theme().textMuted
+        }, _v$23 = {
+          fg: theme().textMuted
+        }, _v$24 = {
+          fg: theme().primary
+        };
+        _v$20 !== _p$.e && (_p$.e = _$setProp(_el$94, "backgroundColor", _v$20, _p$.e));
+        _v$21 !== _p$.t && (_p$.t = _$setProp(_el$95, "fg", _v$21, _p$.t));
+        _v$22 !== _p$.a && (_p$.a = _$setProp(_el$98, "style", _v$22, _p$.a));
+        _v$23 !== _p$.o && (_p$.o = _$setProp(_el$106, "style", _v$23, _p$.o));
+        _v$24 !== _p$.i && (_p$.i = _$setProp(_el$108, "style", _v$24, _p$.i));
         return _p$;
       }, {
         e: undefined,
         t: undefined,
         a: undefined,
         o: undefined,
-        i: undefined,
-        n: undefined,
-        s: undefined,
-        h: undefined
+        i: undefined
       });
-      return _el$110;
+      return _el$94;
     }
   });
 }
@@ -1315,47 +1220,49 @@ function StatusBar(props) {
   const mcp = () => props.api.state.mcp();
   const plugins = () => props.api.plugins.list().filter((item) => item.source !== "internal");
   return (() => {
-    var _el$127 = _$createElement("box"), _el$128 = _$createElement("text"), _el$129 = _$createElement("b"), _el$136 = _$createElement("text");
-    _$insertNode(_el$127, _el$128);
-    _$insertNode(_el$127, _el$136);
-    _$setProp(_el$127, "flexDirection", "row");
-    _$setProp(_el$127, "justifyContent", "space-between");
-    _$setProp(_el$127, "paddingLeft", 1);
-    _$setProp(_el$127, "paddingRight", 1);
-    _$setProp(_el$127, "width", "100%");
-    _$insertNode(_el$128, _el$129);
-    _$insertNode(_el$129, _$createTextNode(`ASYNC`));
-    _$insert(_el$127, _$createComponent(Show, {
+    var _el$110 = _$createElement("box"), _el$111 = _$createElement("text"), _el$112 = _$createElement("b"), _el$119 = _$createElement("text");
+    _$insertNode(_el$110, _el$111);
+    _$insertNode(_el$110, _el$119);
+    _$setProp(_el$110, "flexDirection", "row");
+    _$setProp(_el$110, "justifyContent", "space-between");
+    _$setProp(_el$110, "paddingLeft", 1);
+    _$setProp(_el$110, "paddingRight", 1);
+    _$setProp(_el$110, "width", "100%");
+    _$setProp(_el$110, "height", 1);
+    _$setProp(_el$110, "flexShrink", 0);
+    _$insertNode(_el$111, _el$112);
+    _$insertNode(_el$112, _$createTextNode(`ASYNC`));
+    _$insert(_el$110, _$createComponent(Show, {
       get when() {
         return size().width >= 65;
       },
       get children() {
-        var _el$131 = _$createElement("text"), _el$132 = _$createTextNode(`/`), _el$133 = _$createTextNode(` MCP \xB7 `), _el$134 = _$createTextNode(`/`), _el$135 = _$createTextNode(` plugin TUI aktif`);
-        _$insertNode(_el$131, _el$132);
-        _$insertNode(_el$131, _el$133);
-        _$insertNode(_el$131, _el$134);
-        _$insertNode(_el$131, _el$135);
-        _$insert(_el$131, () => mcp().filter((item) => item.status === "connected").length, _el$132);
-        _$insert(_el$131, () => mcp().length, _el$133);
-        _$insert(_el$131, () => plugins().filter((item) => item.active).length, _el$134);
-        _$insert(_el$131, () => plugins().length, _el$135);
-        _$effect((_$p) => _$setProp(_el$131, "fg", theme().textMuted, _$p));
-        return _el$131;
+        var _el$114 = _$createElement("text"), _el$115 = _$createTextNode(`/`), _el$116 = _$createTextNode(` MCP | `), _el$117 = _$createTextNode(`/`), _el$118 = _$createTextNode(` plugin`);
+        _$insertNode(_el$114, _el$115);
+        _$insertNode(_el$114, _el$116);
+        _$insertNode(_el$114, _el$117);
+        _$insertNode(_el$114, _el$118);
+        _$insert(_el$114, () => mcp().filter((item) => item.status === "connected").length, _el$115);
+        _$insert(_el$114, () => mcp().length, _el$116);
+        _$insert(_el$114, () => plugins().filter((item) => item.active).length, _el$117);
+        _$insert(_el$114, () => plugins().length, _el$118);
+        _$effect((_$p) => _$setProp(_el$114, "fg", theme().textMuted, _$p));
+        return _el$114;
       }
-    }), _el$136);
-    _$insert(_el$136, () => props.api.state.vcs?.branch ?? "lokal");
+    }), _el$119);
+    _$insert(_el$119, () => props.api.state.vcs?.branch ?? "lokal");
     _$effect((_p$) => {
-      var _v$28 = theme().backgroundPanel, _v$29 = theme().primary, _v$30 = theme().textMuted;
-      _v$28 !== _p$.e && (_p$.e = _$setProp(_el$127, "backgroundColor", _v$28, _p$.e));
-      _v$29 !== _p$.t && (_p$.t = _$setProp(_el$128, "fg", _v$29, _p$.t));
-      _v$30 !== _p$.a && (_p$.a = _$setProp(_el$136, "fg", _v$30, _p$.a));
+      var _v$25 = theme().backgroundPanel, _v$26 = theme().primary, _v$27 = theme().textMuted;
+      _v$25 !== _p$.e && (_p$.e = _$setProp(_el$110, "backgroundColor", _v$25, _p$.e));
+      _v$26 !== _p$.t && (_p$.t = _$setProp(_el$111, "fg", _v$26, _p$.t));
+      _v$27 !== _p$.a && (_p$.a = _$setProp(_el$119, "fg", _v$27, _p$.a));
       return _p$;
     }, {
       e: undefined,
       t: undefined,
       a: undefined
     });
-    return _el$127;
+    return _el$110;
   })();
 }
 var plugin = {
@@ -1372,38 +1279,38 @@ var plugin = {
       slots: {
         sidebar_title(_ctx, props) {
           return (() => {
-            var _el$137 = _$createElement("box"), _el$138 = _$createElement("text"), _el$139 = _$createElement("b"), _el$141 = _$createElement("text"), _el$142 = _$createElement("b");
-            _$insertNode(_el$137, _el$138);
-            _$insertNode(_el$137, _el$141);
-            _$setProp(_el$137, "gap", 1);
-            _$setProp(_el$137, "paddingBottom", 1);
-            _$insertNode(_el$138, _el$139);
-            _$insertNode(_el$139, _$createTextNode(`ASYNC AGENT / SESI`));
-            _$insertNode(_el$141, _el$142);
-            _$setProp(_el$141, "wrapMode", "word");
-            _$insert(_el$142, () => props.title);
-            _$insert(_el$137, _$createComponent(Show, {
+            var _el$120 = _$createElement("box"), _el$121 = _$createElement("text"), _el$122 = _$createElement("b"), _el$124 = _$createElement("text"), _el$125 = _$createElement("b");
+            _$insertNode(_el$120, _el$121);
+            _$insertNode(_el$120, _el$124);
+            _$setProp(_el$120, "gap", 1);
+            _$setProp(_el$120, "paddingBottom", 1);
+            _$insertNode(_el$121, _el$122);
+            _$insertNode(_el$122, _$createTextNode(`ASYNC AGENT / SESI`));
+            _$insertNode(_el$124, _el$125);
+            _$setProp(_el$124, "wrapMode", "word");
+            _$insert(_el$125, () => props.title);
+            _$insert(_el$120, _$createComponent(Show, {
               get when() {
                 return props.share_url;
               },
               get children() {
-                var _el$143 = _$createElement("text");
-                _$setProp(_el$143, "wrapMode", "char");
-                _$insert(_el$143, () => props.share_url);
-                _$effect((_$p) => _$setProp(_el$143, "fg", api.theme.current.textMuted, _$p));
-                return _el$143;
+                var _el$126 = _$createElement("text");
+                _$setProp(_el$126, "wrapMode", "char");
+                _$insert(_el$126, () => props.share_url);
+                _$effect((_$p) => _$setProp(_el$126, "fg", api.theme.current.textMuted, _$p));
+                return _el$126;
               }
             }), null);
             _$effect((_p$) => {
-              var _v$31 = api.theme.current.primary, _v$32 = api.theme.current.text;
-              _v$31 !== _p$.e && (_p$.e = _$setProp(_el$138, "fg", _v$31, _p$.e));
-              _v$32 !== _p$.t && (_p$.t = _$setProp(_el$141, "fg", _v$32, _p$.t));
+              var _v$28 = api.theme.current.primary, _v$29 = api.theme.current.text;
+              _v$28 !== _p$.e && (_p$.e = _$setProp(_el$121, "fg", _v$28, _p$.e));
+              _v$29 !== _p$.t && (_p$.t = _$setProp(_el$124, "fg", _v$29, _p$.t));
               return _p$;
             }, {
               e: undefined,
               t: undefined
             });
-            return _el$137;
+            return _el$120;
           })();
         },
         sidebar_content(_ctx, props) {
@@ -1421,18 +1328,18 @@ var plugin = {
         },
         home_footer() {
           return (() => {
-            var _el$144 = _$createElement("text"), _el$145 = _$createTextNode(`OPENCODE ASYNC AGENT \xB7 v`);
-            _$insertNode(_el$144, _el$145);
-            _$insert(_el$144, () => api.app.version, null);
-            _$effect((_$p) => _$setProp(_el$144, "fg", api.theme.current.textMuted, _$p));
-            return _el$144;
+            var _el$127 = _$createElement("text"), _el$128 = _$createTextNode(`OPENCODE ASYNC AGENT \xB7 v`);
+            _$insertNode(_el$127, _el$128);
+            _$insert(_el$127, () => api.app.version, null);
+            _$effect((_$p) => _$setProp(_el$127, "fg", api.theme.current.textMuted, _$p));
+            return _el$127;
           })();
         },
         app_bottom() {
           return (() => {
-            var _el$146 = _$createElement("box");
-            _$setProp(_el$146, "flexShrink", 0);
-            _$insert(_el$146, _$createComponent(Show, {
+            var _el$129 = _$createElement("box");
+            _$setProp(_el$129, "flexShrink", 0);
+            _$insert(_el$129, _$createComponent(Show, {
               get when() {
                 return sessionID();
               },
@@ -1446,10 +1353,10 @@ var plugin = {
                 }
               })
             }), null);
-            _$insert(_el$146, _$createComponent(StatusBar, {
+            _$insert(_el$129, _$createComponent(StatusBar, {
               api
             }), null);
-            return _el$146;
+            return _el$129;
           })();
         }
       }

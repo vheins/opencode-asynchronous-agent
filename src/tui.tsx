@@ -42,6 +42,17 @@ function compact(value: number) {
   return Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value)
 }
 
+/**
+ * A stable 1s clock owned by the calling component. Returned accessor is reactive,
+ * so elapsed labels recompute every second even if child rows are recreated.
+ */
+function createClock(interval = 1000) {
+  const [now, setNow] = createSignal(Date.now())
+  const timer = setInterval(() => setNow(Date.now()), interval)
+  onCleanup(() => clearInterval(timer))
+  return now
+}
+
 /** Navigates the host to a real subagent session, ignoring synthetic row ids. */
 function navigateToSession(api: TuiPluginApi, target: string | undefined) {
   if (!target || !target.startsWith("ses_")) return
@@ -60,20 +71,32 @@ function childTokens(api: TuiPluginApi, childID: string) {
 type SubagentStatus = "running" | "done" | "error"
 
 /**
- * Derives the async-agent aggregate (running/done/error/total) from the parent
- * session's task/subagent tool parts. Per-subagent detail is rendered by SubagentCard.
+ * Derives the async-agent aggregate (running/done/error/total). Reconciles the
+ * parent session's task/subagent tool parts with the live sidebarActivity agents:
+ * a backgrounded subagent's launcher tool completes immediately while its child
+ * session keeps working, so it must still count as running. Invariant:
+ * running + done + error === total.
  */
 function asyncIdentity(api: TuiPluginApi, id: string) {
   const tools = api.state.session.messages(id)
     .flatMap((message) => api.state.part(message.id))
     .filter((part): part is ToolPart => part.type === "tool")
     .filter((part) => part.tool === "task" || part.tool === "subagent")
-  const statuses: SubagentStatus[] = tools.map((part) => part.state.status === "completed" ? "done" : part.state.status === "error" ? "error" : "running")
+  const live = new Set(sidebarActivity(api, id).agents.map((agent) => agent.id))
+  const rows: { id: string; status: SubagentStatus }[] = tools.map((part) => {
+    const child = part.state.status === "pending" ? undefined : typeof part.state.metadata?.sessionId === "string" ? part.state.metadata.sessionId : undefined
+    const key = child ?? part.callID
+    const status: SubagentStatus = live.has(key) || part.state.status === "running" || part.state.status === "pending"
+      ? "running"
+      : part.state.status === "error" ? "error" : "done"
+    return { id: key, status }
+  })
+  for (const agent of live) if (!rows.some((row) => row.id === agent)) rows.push({ id: agent, status: "running" })
   return {
-    running: statuses.filter((status) => status === "running").length,
-    done: statuses.filter((status) => status === "done").length,
-    error: statuses.filter((status) => status === "error").length,
-    total: statuses.length,
+    running: rows.filter((row) => row.status === "running").length,
+    done: rows.filter((row) => row.status === "done").length,
+    error: rows.filter((row) => row.status === "error").length,
+    total: rows.length,
   }
 }
 
@@ -149,7 +172,7 @@ export function InfoCard(props: { api: TuiPluginApi; name: string; title: string
 export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeof sidebarActivity>["agents"][number]; ended?: number }) {
   const [data, setData] = createSignal<Awaited<ReturnType<typeof fetchSubagent>>>()
   const [error, setError] = createSignal("")
-  const [now, setNow] = createSignal(Date.now())
+  const now = createClock()
   const theme = () => props.api.theme.current
   createEffect(() => {
     const id = props.agent.id
@@ -166,17 +189,22 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
     }
     void refresh()
     const poll = ended ? undefined : setInterval(() => void refresh(), 5000)
-    const clock = setInterval(() => setNow(Date.now()), 1000)
-    onCleanup(() => { controller.abort(); clearInterval(poll); clearInterval(clock) })
+    onCleanup(() => { controller.abort(); clearInterval(poll) })
   })
-  const elapsed = () => (data()?.started ?? 0) > 0 ? Math.max(0, (props.ended ?? now()) - data()!.started!) : 0
+  // Prefer the live session start; fall back to the fetched snapshot. Real start
+  // is what lets the label tick from the child's true session creation time.
+  const started = () => props.api.state.session.get(props.agent.id)?.time.created ?? data()?.started
+  const elapsed = () => {
+    const start = started()
+    return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, (props.ended ?? now()) - start) : 0
+  }
   const tokens = () => childTokens(props.api, props.agent.id)
   const rate = () => {
     const value = tokens()
     const seconds = elapsed() / 1000
     return value !== undefined && seconds > 0 ? value / seconds : undefined
   }
-  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Baru berakhir" : props.agent.label}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={`${data()?.model ?? "Memuat model…"}\n${elapsedLabel(data()?.started, props.ended ?? now())}${tokens() === undefined ? "" : ` · ${compact(tokens()!)} tok`}${rate() === undefined ? "" : ` · ${rate()!.toFixed(1)} t/s`}`}>
+  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Baru berakhir" : props.agent.label}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={`${data()?.model ?? "Memuat model…"}\n${elapsedLabel(started(), props.ended ?? now())}${tokens() === undefined ? "" : ` · ${compact(tokens()!)} tok`}${rate() === undefined ? "" : ` · ${rate()!.toFixed(1)} t/s`}`}>
     <Show when={props.agent.target}><text fg={theme().text} wrapMode="word">{props.agent.target}</text></Show>
     <Show when={error()}><text fg={theme().warning}>{error()}</text></Show>
     <Show when={data()}>{(detail) => <box gap={1}>
@@ -267,7 +295,6 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
   const activity = createMemo(() => sidebarActivity(props.api, props.id))
   const calls = createMemo(() => new Map(props.api.state.session.messages(props.id).flatMap((message) => props.api.state.part(message.id).filter((part) => part.type === "tool")).map((part) => [part.callID, part])))
   const detail = (tool: Parameters<typeof activityDetail>[0]) => activityDetail(calls().get(tool.callID) ?? tool)
-  const mcp = retainActivity(() => activity().mcp, (server) => server.name, () => props.id)
   const agents = retainActivity(() => activity().agents, (agent) => agent.id, () => props.id)
   const tools = retainActivity(() => activity().tools, (tool) => tool.callID, () => props.id)
   const size = useTerminalDimensions()
@@ -294,22 +321,6 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
           <text fg={theme().textMuted}>Periksa permintaan di percakapan.</text>
         </box>
       </Show>
-      <InfoCard api={props.api} name="connections" title="Koneksi MCP" initialOpen summary={`${props.api.state.mcp().filter((server) => server.status === "connected").length}/${props.api.state.mcp().length} terhubung · ${activity().mcp.length} sedang dipakai`}>
-        <Show when={mcp().length > 0}>
-          <box>
-            <text fg={theme().primary}><b>MCP sedang dipakai / terakhir</b></text>
-            <For each={mcp().slice(0, limit())}>{(row) => <box>
-              <text fg={theme().text} wrapMode="char">{row.item.name} · {row.ended === undefined ? `${row.item.calls.length} panggilan` : "Baru berakhir"}</text>
-              <For each={row.item.calls.slice(0, 2)}>{(call) => <text fg={theme().textMuted} wrapMode="word">{detail(call).status} · {detail(call).action}{detail(call).target ? ` · ${detail(call).target}` : ""}</text>}</For>
-            </box>}</For>
-            <Show when={mcp().length > limit()}><text fg={theme().textMuted}>+{mcp().length - limit()} MCP lainnya</text></Show>
-          </box>
-        </Show>
-        <For each={props.api.state.mcp().filter((server) => !mcp().some((row) => row.item.name === server.name))}>{(server) =>
-          <text fg={server.status === "connected" ? theme().textMuted : theme().warning} wrapMode="char">{server.name} · {server.status === "connected" ? "Terhubung · tidak sedang dipakai" : server.status}</text>
-        }</For>
-        <Show when={!props.api.state.mcp().length}><text fg={theme().textMuted}>Tidak ada server MCP.</text></Show>
-      </InfoCard>
       <InfoCard api={props.api} name="result" title="Aktivitas & hasil" initialOpen summary={activity().current ? `${activityDetail(activity().current!).action} · ${activityDetail(activity().current!).status}` : activity().latest ? `${activityDetail(activity().latest!).action} · ${activityDetail(activity().latest!).status}` : "Belum ada aktivitas tool"}>
         <Show when={tools().length > 0}>
           <box>
@@ -319,7 +330,7 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
             <Show when={tools().length > limit()}><text fg={theme().textMuted}>+{tools().length - limit()} tool lainnya</text></Show>
           </box>
         </Show>
-        <Show when={activity().latest && !tools().slice(0, limit()).some((row) => row.item.callID === activity().latest?.callID) && !mcp().some((row) => row.item.calls.some((call) => call.callID === activity().latest?.callID)) && !["task", "subagent"].includes(activity().latest!.tool) ? activity().latest : undefined}>{(latest) => <box>
+        <Show when={activity().latest && !tools().slice(0, limit()).some((row) => row.item.callID === activity().latest?.callID) && !activity().mcp.some((server) => server.calls.some((call) => call.callID === activity().latest?.callID)) && !["task", "subagent"].includes(activity().latest!.tool) ? activity().latest : undefined}>{(latest) => <box>
           <text fg={theme().text} wrapMode="word">{activityDetail(latest()).target || activityDetail(latest()).action}</text>
           <text fg={theme().textMuted} wrapMode="word">{activityDetail(latest()).result || "Masih diproses; belum ada hasil akhir."}</text>
         </box>}</Show>
@@ -353,6 +364,9 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
   const data = createMemo(() => sessionMetrics(props.api, props.id))
   const identity = createMemo(() => asyncIdentity(props.api, props.id))
   const theme = () => props.api.theme.current
+  const state = () => activity().attention > 0 ? `${activity().attention} menunggu jawaban` : activity().status?.type === "busy" ? "Bekerja" : activity().status?.type === "retry" ? "Mencoba ulang" : "Siap"
+  const latest = () => activity().latest ? `${activityDetail(activity().latest!).status} · ${activityDetail(activity().latest!).action}` : "Belum ada aktivitas tool"
+  const target = () => activity().latest ? activityDetail(activity().latest!).target : ""
   const open = () => props.api.ui.dialog.replace(() => <props.api.ui.Dialog onClose={() => props.api.ui.dialog.clear()}>
     <box padding={1}>
       <text fg={theme().primary}><b>Studio · Detail sesi</b> · Esc tutup</text>
@@ -367,18 +381,16 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
   }])
   if (unregister) onCleanup(unregister)
   return <Show when={!props.sidebarVisible}>
-    <box backgroundColor={theme().backgroundPanel} flexDirection="row" width="100%" height={8} flexShrink={0} gap={1} paddingLeft={1} paddingRight={1}>
-      <box flexGrow={1} minWidth={0} flexShrink={1}>
-        <text height={1} fg={theme().primary}><b>ASYNC · {data().agent ?? "Sesi"}</b></text>
-        <text height={1} fg={theme().text}>{activity().attention ? `${activity().attention} permintaan menunggu jawaban` : identity().running > 0 ? `${identity().running} subagent berjalan` : "Siap"}</text>
-        <text height={1} fg={theme().textMuted}>{data().model}{data().used === undefined ? "" : ` · ${compact(data().used ?? NaN)} token (laporan)`}</text>
-        <text height={1} fg={theme().text}>● {identity().running} run · ✓ {identity().done} done · ✕ {identity().error} err · Σ {identity().total}</text>
-        <text height={1} fg={theme().text}>{activity().latest ? `${activityDetail(activity().latest!).status} · ${activityDetail(activity().latest!).action}` : "Belum ada aktivitas tool"}</text>
-        <text height={1} fg={theme().textMuted}>{activity().latest ? activityDetail(activity().latest!).target : ""}</text>
-        <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); open() } }}>
-          <text height={1} fg={theme().primary}>/studio-panel · detail</text>
-        </box>
-      </box>
+    <box
+      backgroundColor={theme().backgroundPanel}
+      width="100%" flexShrink={0} paddingLeft={1} paddingRight={1}
+      onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); open() } }}>
+      <text fg={theme().text} wrapMode="word">
+        <b>ASYNC · {data().agent ?? "Sesi"}</b>
+        <span style={{ fg: theme().textMuted }}> | {state()} | {data().model}{data().used === undefined ? "" : ` · ${compact(data().used ?? NaN)} token`} | ● {identity().running} run · ✓ {identity().done} done · ✕ {identity().error} err · Σ {identity().total} | </span>
+        <span style={{ fg: theme().textMuted }}>{latest()}{target() ? ` · ${target()}` : ""} | </span>
+        <span style={{ fg: theme().primary }}>/studio-panel · detail</span>
+      </text>
     </box>
   </Show>
 }
@@ -389,10 +401,10 @@ function StatusBar(props: { api: TuiPluginApi }) {
   const mcp = () => props.api.state.mcp()
   const plugins = () => props.api.plugins.list().filter((item) => item.source !== "internal")
   return (
-    <box flexDirection="row" justifyContent="space-between" backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} width="100%">
+    <box flexDirection="row" justifyContent="space-between" backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} width="100%" height={1} flexShrink={0}>
       <text fg={theme().primary}><b>ASYNC</b></text>
       <Show when={size().width >= 65}>
-        <text fg={theme().textMuted}>{mcp().filter((item) => item.status === "connected").length}/{mcp().length} MCP · {plugins().filter((item) => item.active).length}/{plugins().length} plugin TUI aktif</text>
+        <text fg={theme().textMuted}>{mcp().filter((item) => item.status === "connected").length}/{mcp().length} MCP | {plugins().filter((item) => item.active).length}/{plugins().length} plugin</text>
       </Show>
       <text fg={theme().textMuted}>{props.api.state.vcs?.branch ?? "lokal"}</text>
     </box>

@@ -8,10 +8,10 @@ Works on **both** OpenCode V1 (`>=1.18.0`) and V2 (`>=2.0.0`):
 
 - **`./server`** — the tool hook that forces `background = true`
 - **`./tui`** — the sidebar monitor: a Saffteen-style collapsible InfoCard stack
-  (MCP connections, activity/result, provider token report, task progress,
-  workspace) plus per-subagent cards (activity, todo, model, duration). The
-  async-agent identity is preserved: running/done/error/total counts, per-subagent
-  elapsed time, **total tokens + tokens/sec**, and a status-bar line when the
+  (activity/result, provider token report, task progress, workspace) plus
+  per-subagent cards (activity, todo, model, duration). The async-agent identity
+  is preserved: running/done/error/total counts, per-subagent elapsed time,
+  **total tokens + tokens/sec**, and a compact one-line status bar when the
   sidebar is collapsed.
 
 ```
