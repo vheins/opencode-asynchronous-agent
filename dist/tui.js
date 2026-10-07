@@ -213,11 +213,12 @@ function compact(value) {
     maximumFractionDigits: 1
   }).format(value);
 }
-function durationLabel(ms) {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor(seconds / 60) % 60;
-  return hours ? `${hours}j ${minutes}m ${seconds % 60}d` : `${minutes}m ${seconds % 60}d`;
+function navigateToSession(api, target) {
+  if (!target || !target.startsWith("ses_"))
+    return;
+  api.route.navigate("session", {
+    sessionID: target
+  });
 }
 function childTokens(api, childID) {
   const latest = [...api.state.session.messages(childID)].reverse().find((message) => message.role === "assistant");
@@ -228,32 +229,13 @@ function childTokens(api, childID) {
   return total > 0 ? total : undefined;
 }
 function asyncIdentity(api, id) {
-  const now = Date.now();
   const tools = api.state.session.messages(id).flatMap((message) => api.state.part(message.id)).filter((part) => part.type === "tool").filter((part) => part.tool === "task" || part.tool === "subagent");
-  const rows = tools.map((part) => {
-    const state = part.state;
-    const child = state.status === "pending" ? undefined : typeof state.metadata?.sessionId === "string" ? state.metadata.sessionId : undefined;
-    const status = state.status === "completed" ? "done" : state.status === "error" ? "error" : "running";
-    const started = state.status === "pending" ? undefined : state.time.start;
-    const ended = state.status === "completed" || state.status === "error" ? state.time.end : undefined;
-    const elapsedMs = started === undefined ? 0 : Math.max(0, (ended ?? now) - started);
-    const tokens = child ? childTokens(api, child) : undefined;
-    const seconds = elapsedMs / 1000;
-    return {
-      id: child ?? part.callID,
-      label: activityDetail(part).target || part.tool,
-      status,
-      elapsedMs,
-      tokens,
-      tokensPerSecond: tokens !== undefined && seconds > 0 ? tokens / seconds : undefined
-    };
-  });
+  const statuses = tools.map((part) => part.state.status === "completed" ? "done" : part.state.status === "error" ? "error" : "running");
   return {
-    rows,
-    running: rows.filter((row) => row.status === "running").length,
-    done: rows.filter((row) => row.status === "done").length,
-    error: rows.filter((row) => row.status === "error").length,
-    total: rows.length
+    running: statuses.filter((status) => status === "running").length,
+    done: statuses.filter((status) => status === "done").length,
+    error: statuses.filter((status) => status === "error").length,
+    total: statuses.length
   };
 }
 function subagentToasts(api) {
@@ -294,7 +276,9 @@ function subagentToasts(api) {
 }
 function InfoCard(props) {
   const [open, setOpen] = createSignal(props.api.kv.get(`studio.card.${props.name}`, props.initialOpen ?? false));
+  const [hovered, setHovered] = createSignal(false);
   const theme = () => props.api.theme.current;
+  const clickable = () => Boolean(props.onActivate);
   createEffect(() => props.onOpen?.(open()));
   const toggle = () => {
     const next = !open();
@@ -315,47 +299,68 @@ function InfoCard(props) {
   }]);
   if (unregister)
     onCleanup(unregister);
+  const header = (event) => {
+    if (event.button !== 0)
+      return;
+    event.stopPropagation();
+    if (props.onActivate)
+      props.onActivate();
+    else
+      toggle();
+  };
   return (() => {
-    var _el$ = _$createElement("box"), _el$2 = _$createElement("box"), _el$3 = _$createElement("text"), _el$4 = _$createElement("b"), _el$5 = _$createTextNode(` `), _el$6 = _$createElement("text");
+    var _el$ = _$createElement("box"), _el$2 = _$createElement("box"), _el$3 = _$createElement("text"), _el$4 = _$createElement("b"), _el$5 = _$createElement("text"), _el$6 = _$createElement("b"), _el$7 = _$createTextNode(` `), _el$8 = _$createElement("text");
     _$insertNode(_el$, _el$2);
+    _$insertNode(_el$, _el$8);
     _$setProp(_el$, "paddingLeft", 1);
     _$setProp(_el$, "paddingRight", 1);
     _$insertNode(_el$2, _el$3);
-    _$insertNode(_el$2, _el$6);
-    _$setProp(_el$2, "onMouseDown", (event) => {
+    _$insertNode(_el$2, _el$5);
+    _$setProp(_el$2, "flexDirection", "row");
+    _$setProp(_el$2, "onMouseDown", header);
+    _$insertNode(_el$3, _el$4);
+    _$setProp(_el$3, "onMouseDown", (event) => {
       if (event.button === 0) {
         event.stopPropagation();
         toggle();
       }
     });
-    _$insertNode(_el$3, _el$4);
-    _$insertNode(_el$4, _el$5);
-    _$insert(_el$4, () => open() ? "\u25BE" : "\u25B8", _el$5);
-    _$insert(_el$4, () => props.title, null);
-    _$setProp(_el$6, "wrapMode", "word");
-    _$insert(_el$6, () => props.summary);
+    _$insert(_el$4, () => open() ? "\u25BE" : "\u25B8");
+    _$insertNode(_el$5, _el$6);
+    _$insertNode(_el$6, _el$7);
+    _$insert(_el$6, () => props.title, null);
+    _$insert(_el$6, () => clickable() ? " \u2192" : "", null);
+    _$setProp(_el$8, "wrapMode", "word");
+    _$setProp(_el$8, "onMouseDown", header);
+    _$insert(_el$8, () => props.summary);
     _$insert(_el$, _$createComponent(Show, {
       get when() {
         return open();
       },
       get children() {
-        var _el$7 = _$createElement("box");
-        _$setProp(_el$7, "paddingTop", 1);
-        _$setProp(_el$7, "paddingBottom", 1);
-        _$insert(_el$7, () => props.children);
-        return _el$7;
+        var _el$9 = _$createElement("box");
+        _$setProp(_el$9, "paddingTop", 1);
+        _$setProp(_el$9, "paddingBottom", 1);
+        _$insert(_el$9, () => props.children);
+        return _el$9;
       }
     }), null);
     _$effect((_p$) => {
-      var _v$ = theme().backgroundElement, _v$2 = theme().primary, _v$3 = theme().textMuted;
+      var _v$ = hovered() ? theme().backgroundPanel : theme().backgroundElement, _v$2 = clickable() ? () => setHovered(true) : undefined, _v$3 = clickable() ? () => setHovered(false) : undefined, _v$4 = hovered() ? theme().accent : theme().primary, _v$5 = hovered() ? theme().accent : theme().primary, _v$6 = theme().textMuted;
       _v$ !== _p$.e && (_p$.e = _$setProp(_el$, "backgroundColor", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp(_el$3, "fg", _v$2, _p$.t));
-      _v$3 !== _p$.a && (_p$.a = _$setProp(_el$6, "fg", _v$3, _p$.a));
+      _v$2 !== _p$.t && (_p$.t = _$setProp(_el$, "onMouseOver", _v$2, _p$.t));
+      _v$3 !== _p$.a && (_p$.a = _$setProp(_el$, "onMouseOut", _v$3, _p$.a));
+      _v$4 !== _p$.o && (_p$.o = _$setProp(_el$3, "fg", _v$4, _p$.o));
+      _v$5 !== _p$.i && (_p$.i = _$setProp(_el$5, "fg", _v$5, _p$.i));
+      _v$6 !== _p$.n && (_p$.n = _$setProp(_el$8, "fg", _v$6, _p$.n));
       return _p$;
     }, {
       e: undefined,
       t: undefined,
-      a: undefined
+      a: undefined,
+      o: undefined,
+      i: undefined,
+      n: undefined
     });
     return _el$;
   })();
@@ -398,6 +403,13 @@ function SubagentCard(props) {
       clearInterval(clock);
     });
   });
+  const elapsed = () => (data()?.started ?? 0) > 0 ? Math.max(0, (props.ended ?? now()) - data().started) : 0;
+  const tokens = () => childTokens(props.api, props.agent.id);
+  const rate = () => {
+    const value = tokens();
+    const seconds = elapsed() / 1000;
+    return value !== undefined && seconds > 0 ? value / seconds : undefined;
+  };
   return _$createComponent(InfoCard, {
     get api() {
       return props.api;
@@ -408,9 +420,10 @@ function SubagentCard(props) {
     get title() {
       return `${props.agent.name} \xB7 ${props.ended ? "Baru berakhir" : props.agent.label}`;
     },
+    onActivate: () => navigateToSession(props.api, props.agent.id),
     get summary() {
       return `${data()?.model ?? "Memuat model\u2026"}
-${elapsedLabel(data()?.started, props.ended ?? now())} sejak sesi dibuat`;
+${elapsedLabel(data()?.started, props.ended ?? now())}${tokens() === undefined ? "" : ` \xB7 ${compact(tokens())} tok`}${rate() === undefined ? "" : ` \xB7 ${rate().toFixed(1)} t/s`}`;
     },
     get children() {
       return [_$createComponent(Show, {
@@ -418,79 +431,79 @@ ${elapsedLabel(data()?.started, props.ended ?? now())} sejak sesi dibuat`;
           return props.agent.target;
         },
         get children() {
-          var _el$8 = _$createElement("text");
-          _$setProp(_el$8, "wrapMode", "word");
-          _$insert(_el$8, () => props.agent.target);
-          _$effect((_$p) => _$setProp(_el$8, "fg", theme().text, _$p));
-          return _el$8;
+          var _el$0 = _$createElement("text");
+          _$setProp(_el$0, "wrapMode", "word");
+          _$insert(_el$0, () => props.agent.target);
+          _$effect((_$p) => _$setProp(_el$0, "fg", theme().text, _$p));
+          return _el$0;
         }
       }), _$createComponent(Show, {
         get when() {
           return error();
         },
         get children() {
-          var _el$9 = _$createElement("text");
-          _$insert(_el$9, error);
-          _$effect((_$p) => _$setProp(_el$9, "fg", theme().warning, _$p));
-          return _el$9;
+          var _el$1 = _$createElement("text");
+          _$insert(_el$1, error);
+          _$effect((_$p) => _$setProp(_el$1, "fg", theme().warning, _$p));
+          return _el$1;
         }
       }), _$createComponent(Show, {
         get when() {
           return data();
         },
         children: (detail) => (() => {
-          var _el$0 = _$createElement("box"), _el$1 = _$createElement("text"), _el$11 = _$createElement("text");
-          _$insertNode(_el$0, _el$1);
-          _$insertNode(_el$0, _el$11);
-          _$setProp(_el$0, "gap", 1);
-          _$setProp(_el$1, "wrapMode", "word");
-          _$insert(_el$1, (() => {
+          var _el$10 = _$createElement("box"), _el$11 = _$createElement("text"), _el$13 = _$createElement("text");
+          _$insertNode(_el$10, _el$11);
+          _$insertNode(_el$10, _el$13);
+          _$setProp(_el$10, "gap", 1);
+          _$setProp(_el$11, "wrapMode", "word");
+          _$insert(_el$11, (() => {
             var _c$ = _$memo(() => !!detail().activity);
             return () => _c$() ? `${detail().current ? "Sekarang" : "Terakhir"} \xB7 ${detail().activity.action} \xB7 ${detail().activity.status}` : "Aktivitas tool belum dilaporkan.";
           })());
-          _$insert(_el$0, _$createComponent(Show, {
+          _$insert(_el$10, _$createComponent(Show, {
             get when() {
               return detail().activity?.target;
             },
             get children() {
-              var _el$10 = _$createElement("text");
-              _$setProp(_el$10, "wrapMode", "char");
-              _$insert(_el$10, () => detail().activity?.target);
-              _$effect((_$p) => _$setProp(_el$10, "fg", theme().textMuted, _$p));
-              return _el$10;
+              var _el$12 = _$createElement("text");
+              _$setProp(_el$12, "wrapMode", "char");
+              _$insert(_el$12, () => detail().activity?.target);
+              _$effect((_$p) => _$setProp(_el$12, "fg", theme().textMuted, _$p));
+              return _el$12;
             }
-          }), _el$11);
-          _$insert(_el$11, (() => {
+          }), _el$13);
+          _$insert(_el$13, (() => {
             var _c$2 = _$memo(() => !!detail().todos.length);
             return () => _c$2() ? `${detail().completed}/${detail().todos.length} tugas selesai` : "Progres tugas belum dilaporkan.";
           })());
-          _$insert(_el$0, _$createComponent(For, {
+          _$insert(_el$10, _$createComponent(For, {
             get each() {
               return detail().todos;
             },
             children: (todo) => (() => {
-              var _el$12 = _$createElement("text"), _el$13 = _$createTextNode(` `);
-              _$insertNode(_el$12, _el$13);
-              _$setProp(_el$12, "wrapMode", "word");
-              _$insert(_el$12, (() => {
+              var _el$14 = _$createElement("text"), _el$15 = _$createTextNode(` `);
+              _$insertNode(_el$14, _el$15);
+              _$setProp(_el$14, "wrapMode", "word");
+              _$insert(_el$14, (() => {
                 var _c$3 = _$memo(() => todo.status === "completed");
                 return () => _c$3() ? "\u2713" : todo.status === "in_progress" ? "\u203A" : "\xB7";
-              })(), _el$13);
-              _$insert(_el$12, () => todo.content, null);
-              _$effect((_$p) => _$setProp(_el$12, "fg", todo.status === "in_progress" ? theme().text : theme().textMuted, _$p));
-              return _el$12;
+              })(), _el$15);
+              _$insert(_el$14, () => todo.content, null);
+              _$effect((_$p) => _$setProp(_el$14, "fg", todo.status === "in_progress" ? theme().text : theme().textMuted, _$p));
+              return _el$14;
             })()
           }), null);
           _$effect((_p$) => {
-            var _v$4 = theme().text, _v$5 = theme().textMuted;
-            _v$4 !== _p$.e && (_p$.e = _$setProp(_el$1, "fg", _v$4, _p$.e));
-            _v$5 !== _p$.t && (_p$.t = _$setProp(_el$11, "fg", _v$5, _p$.t));
+            var _v$7 = theme().text, _v$8 = theme().textMuted;
+            _v$7 !== _p$.e && (_p$.e = _$setProp(_el$11, "fg", _v$7, _p$.e));
+            _v$8 !== _p$.t && (_p$.t = _$setProp(_el$13, "fg", _v$8, _p$.t));
             return _p$;
           }, {
             e: undefined,
             t: undefined
           });
-          return _el$0;
+          return _el$10;
         })()
       })];
     }
@@ -545,211 +558,149 @@ function WorkspaceCard(props) {
     },
     get children() {
       return [(() => {
-        var _el$14 = _$createElement("text");
-        _$setProp(_el$14, "wrapMode", "char");
-        _$insert(_el$14, () => props.api.state.path.directory);
-        _$effect((_$p) => _$setProp(_el$14, "fg", theme().textMuted, _$p));
-        return _el$14;
+        var _el$16 = _$createElement("text");
+        _$setProp(_el$16, "wrapMode", "char");
+        _$insert(_el$16, () => props.api.state.path.directory);
+        _$effect((_$p) => _$setProp(_el$16, "fg", theme().textMuted, _$p));
+        return _el$16;
       })(), (() => {
-        var _el$15 = _$createElement("text");
-        _$insertNode(_el$15, _$createTextNode(`Git lokal, bukan hanya perubahan sesi \xB7 refresh 15 dtk`));
-        _$effect((_$p) => _$setProp(_el$15, "fg", theme().textMuted, _$p));
-        return _el$15;
+        var _el$17 = _$createElement("text");
+        _$insertNode(_el$17, _$createTextNode(`Git lokal, bukan hanya perubahan sesi \xB7 refresh 15 dtk`));
+        _$effect((_$p) => _$setProp(_el$17, "fg", theme().textMuted, _$p));
+        return _el$17;
       })(), _$createComponent(Show, {
         get when() {
           return data();
         },
         children: (scan) => (() => {
-          var _el$19 = _$createElement("box");
-          _$setProp(_el$19, "gap", 1);
-          _$insert(_el$19, _$createComponent(For, {
+          var _el$21 = _$createElement("box");
+          _$setProp(_el$21, "gap", 1);
+          _$insert(_el$21, _$createComponent(For, {
             get each() {
               return scan().repos;
             },
             get fallback() {
               return (() => {
-                var _el$22 = _$createElement("text");
-                _$insertNode(_el$22, _$createTextNode(`Tidak ditemukan repo Git dalam cakupan pemindaian.`));
-                _$effect((_$p) => _$setProp(_el$22, "fg", theme().textMuted, _$p));
-                return _el$22;
+                var _el$24 = _$createElement("text");
+                _$insertNode(_el$24, _$createTextNode(`Tidak ditemukan repo Git dalam cakupan pemindaian.`));
+                _$effect((_$p) => _$setProp(_el$24, "fg", theme().textMuted, _$p));
+                return _el$24;
               })();
             },
             children: (repo) => (() => {
-              var _el$24 = _$createElement("box"), _el$25 = _$createElement("text"), _el$26 = _$createElement("b"), _el$27 = _$createTextNode(` \xB7 `);
-              _$insertNode(_el$24, _el$25);
-              _$insertNode(_el$25, _el$26);
-              _$insertNode(_el$25, _el$27);
-              _$setProp(_el$25, "wrapMode", "char");
-              _$insert(_el$26, () => repo.path);
-              _$insert(_el$25, () => repo.branch, null);
-              _$insert(_el$24, _$createComponent(Show, {
+              var _el$26 = _$createElement("box"), _el$27 = _$createElement("text"), _el$28 = _$createElement("b"), _el$29 = _$createTextNode(` \xB7 `);
+              _$insertNode(_el$26, _el$27);
+              _$insertNode(_el$27, _el$28);
+              _$insertNode(_el$27, _el$29);
+              _$setProp(_el$27, "wrapMode", "char");
+              _$insert(_el$28, () => repo.path);
+              _$insert(_el$27, () => repo.branch, null);
+              _$insert(_el$26, _$createComponent(Show, {
                 get when() {
                   return repo.error;
                 },
                 get fallback() {
                   return (() => {
-                    var _el$29 = _$createElement("text");
-                    _$insert(_el$29, (() => {
+                    var _el$31 = _$createElement("text");
+                    _$insert(_el$31, (() => {
                       var _c$4 = _$memo(() => !!repo.files.length);
                       return () => _c$4() ? `${repo.files.length} entri berubah` : "Working tree bersih";
                     })());
-                    _$effect((_$p) => _$setProp(_el$29, "fg", theme().textMuted, _$p));
-                    return _el$29;
+                    _$effect((_$p) => _$setProp(_el$31, "fg", theme().textMuted, _$p));
+                    return _el$31;
                   })();
                 },
                 get children() {
-                  var _el$28 = _$createElement("text");
-                  _$insert(_el$28, () => repo.error);
-                  _$effect((_$p) => _$setProp(_el$28, "fg", theme().warning, _$p));
-                  return _el$28;
+                  var _el$30 = _$createElement("text");
+                  _$insert(_el$30, () => repo.error);
+                  _$effect((_$p) => _$setProp(_el$30, "fg", theme().warning, _$p));
+                  return _el$30;
                 }
               }), null);
-              _$insert(_el$24, _$createComponent(For, {
+              _$insert(_el$26, _$createComponent(For, {
                 get each() {
                   return repo.files;
                 },
                 children: (file) => (() => {
-                  var _el$30 = _$createElement("text"), _el$31 = _$createTextNode(` `);
-                  _$insertNode(_el$30, _el$31);
-                  _$setProp(_el$30, "wrapMode", "char");
-                  _$insert(_el$30, () => file.status, _el$31);
-                  _$insert(_el$30, () => file.path, null);
-                  _$effect((_$p) => _$setProp(_el$30, "fg", theme().text, _$p));
-                  return _el$30;
+                  var _el$32 = _$createElement("text"), _el$33 = _$createTextNode(` `);
+                  _$insertNode(_el$32, _el$33);
+                  _$setProp(_el$32, "wrapMode", "char");
+                  _$insert(_el$32, () => file.status, _el$33);
+                  _$insert(_el$32, () => file.path, null);
+                  _$effect((_$p) => _$setProp(_el$32, "fg", theme().text, _$p));
+                  return _el$32;
                 })()
               }), null);
-              _$effect((_$p) => _$setProp(_el$25, "fg", theme().primary, _$p));
-              return _el$24;
+              _$effect((_$p) => _$setProp(_el$27, "fg", theme().primary, _$p));
+              return _el$26;
             })()
           }), null);
-          _$insert(_el$19, _$createComponent(For, {
+          _$insert(_el$21, _$createComponent(For, {
             get each() {
               return scan().errors;
             },
             children: (message) => (() => {
-              var _el$32 = _$createElement("text");
-              _$insert(_el$32, message);
-              _$effect((_$p) => _$setProp(_el$32, "fg", theme().warning, _$p));
-              return _el$32;
+              var _el$34 = _$createElement("text");
+              _$insert(_el$34, message);
+              _$effect((_$p) => _$setProp(_el$34, "fg", theme().warning, _$p));
+              return _el$34;
             })()
           }), null);
-          _$insert(_el$19, _$createComponent(Show, {
+          _$insert(_el$21, _$createComponent(Show, {
             get when() {
               return scan().limited;
             },
             get children() {
-              var _el$20 = _$createElement("text");
-              _$insertNode(_el$20, _$createTextNode(`Cakupan dibatasi 4 tingkat / 300 folder.`));
-              _$effect((_$p) => _$setProp(_el$20, "fg", theme().warning, _$p));
-              return _el$20;
+              var _el$22 = _$createElement("text");
+              _$insertNode(_el$22, _$createTextNode(`Cakupan dibatasi 4 tingkat / 300 folder.`));
+              _$effect((_$p) => _$setProp(_el$22, "fg", theme().warning, _$p));
+              return _el$22;
             }
           }), null);
-          return _el$19;
+          return _el$21;
         })()
       }), (() => {
-        var _el$17 = _$createElement("text"), _el$18 = _$createTextNode(` berkas tercatat terpisah oleh sesi OpenCode.`);
-        _$insertNode(_el$17, _el$18);
-        _$insert(_el$17, () => props.api.state.session.diff(props.id).length, _el$18);
-        _$effect((_$p) => _$setProp(_el$17, "fg", theme().textMuted, _$p));
-        return _el$17;
+        var _el$19 = _$createElement("text"), _el$20 = _$createTextNode(` berkas tercatat terpisah oleh sesi OpenCode.`);
+        _$insertNode(_el$19, _el$20);
+        _$insert(_el$19, () => props.api.state.session.diff(props.id).length, _el$20);
+        _$effect((_$p) => _$setProp(_el$19, "fg", theme().textMuted, _$p));
+        return _el$19;
       })()];
     }
   });
 }
 function AsyncIdentity(props) {
   const theme = () => props.api.theme.current;
-  const [now, setNow] = createSignal(Date.now());
-  createEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    onCleanup(() => clearInterval(timer));
-  });
   const data = createMemo(() => asyncIdentity(props.api, props.id));
   return (() => {
-    var _el$33 = _$createElement("box"), _el$34 = _$createElement("text"), _el$35 = _$createElement("b"), _el$36 = _$createTextNode(`Subagents `), _el$37 = _$createElement("text"), _el$38 = _$createTextNode(`\u25CF `), _el$39 = _$createTextNode(` run \xB7 \u2713 `), _el$40 = _$createTextNode(` done \xB7 \u2715 `), _el$41 = _$createTextNode(` err \xB7 \u03A3 `);
-    _$insertNode(_el$33, _el$34);
-    _$insertNode(_el$33, _el$37);
-    _$setProp(_el$33, "paddingLeft", 1);
-    _$setProp(_el$33, "paddingRight", 1);
-    _$insertNode(_el$34, _el$35);
+    var _el$35 = _$createElement("box"), _el$36 = _$createElement("text"), _el$37 = _$createElement("b"), _el$38 = _$createTextNode(`Subagents `), _el$39 = _$createElement("text"), _el$40 = _$createTextNode(`\u25CF `), _el$41 = _$createTextNode(` run \xB7 \u2713 `), _el$42 = _$createTextNode(` done \xB7 \u2715 `), _el$43 = _$createTextNode(` err \xB7 \u03A3 `);
     _$insertNode(_el$35, _el$36);
-    _$insert(_el$35, () => data().total, null);
+    _$insertNode(_el$35, _el$39);
+    _$setProp(_el$35, "paddingLeft", 1);
+    _$setProp(_el$35, "paddingRight", 1);
+    _$insertNode(_el$36, _el$37);
     _$insertNode(_el$37, _el$38);
-    _$insertNode(_el$37, _el$39);
-    _$insertNode(_el$37, _el$40);
-    _$insertNode(_el$37, _el$41);
-    _$insert(_el$37, () => data().running, _el$39);
-    _$insert(_el$37, () => data().done, _el$40);
-    _$insert(_el$37, () => data().error, _el$41);
     _$insert(_el$37, () => data().total, null);
-    _$insert(_el$33, _$createComponent(Show, {
-      get when() {
-        return !props.compact;
-      },
-      get children() {
-        return _$createComponent(For, {
-          get each() {
-            return data().rows.slice(0, 4);
-          },
-          children: (row) => (() => {
-            var _el$45 = _$createElement("box"), _el$46 = _$createElement("text"), _el$47 = _$createTextNode(` `), _el$48 = _$createElement("text"), _el$49 = _$createTextNode(`\u21B3 `);
-            _$insertNode(_el$45, _el$46);
-            _$insertNode(_el$45, _el$48);
-            _$insertNode(_el$46, _el$47);
-            _$setProp(_el$46, "wrapMode", "word");
-            _$insert(_el$46, (() => {
-              var _c$5 = _$memo(() => row.status === "done");
-              return () => _c$5() ? "\u2713" : row.status === "error" ? "\u2715" : "\u25CF";
-            })(), _el$47);
-            _$insert(_el$46, () => row.label, null);
-            _$insertNode(_el$48, _el$49);
-            _$insert(_el$48, () => durationLabel(row.elapsedMs), null);
-            _$insert(_el$48, (() => {
-              var _c$6 = _$memo(() => row.tokens === undefined);
-              return () => _c$6() ? "" : ` \xB7 ${compact(row.tokens)} tok`;
-            })(), null);
-            _$insert(_el$48, (() => {
-              var _c$7 = _$memo(() => row.tokensPerSecond === undefined);
-              return () => _c$7() ? "" : ` \xB7 ${row.tokensPerSecond.toFixed(1)} t/s`;
-            })(), null);
-            _$effect((_p$) => {
-              var _v$9 = row.status === "error" ? theme().error : row.status === "done" ? theme().success : theme().text, _v$0 = theme().textMuted;
-              _v$9 !== _p$.e && (_p$.e = _$setProp(_el$46, "fg", _v$9, _p$.e));
-              _v$0 !== _p$.t && (_p$.t = _$setProp(_el$48, "fg", _v$0, _p$.t));
-              return _p$;
-            }, {
-              e: undefined,
-              t: undefined
-            });
-            return _el$45;
-          })()
-        });
-      }
-    }), null);
-    _$insert(_el$33, _$createComponent(Show, {
-      get when() {
-        return _$memo(() => !!!props.compact)() && data().total > 4;
-      },
-      get children() {
-        var _el$42 = _$createElement("text"), _el$43 = _$createTextNode(`+`), _el$44 = _$createTextNode(` subagent lainnya`);
-        _$insertNode(_el$42, _el$43);
-        _$insertNode(_el$42, _el$44);
-        _$insert(_el$42, () => data().total - 4, _el$44);
-        _$effect((_$p) => _$setProp(_el$42, "fg", theme().textMuted, _$p));
-        return _el$42;
-      }
-    }), null);
+    _$insertNode(_el$39, _el$40);
+    _$insertNode(_el$39, _el$41);
+    _$insertNode(_el$39, _el$42);
+    _$insertNode(_el$39, _el$43);
+    _$insert(_el$39, () => data().running, _el$41);
+    _$insert(_el$39, () => data().done, _el$42);
+    _$insert(_el$39, () => data().error, _el$43);
+    _$insert(_el$39, () => data().total, null);
     _$effect((_p$) => {
-      var _v$6 = theme().backgroundElement, _v$7 = theme().primary, _v$8 = theme().text;
-      _v$6 !== _p$.e && (_p$.e = _$setProp(_el$33, "backgroundColor", _v$6, _p$.e));
-      _v$7 !== _p$.t && (_p$.t = _$setProp(_el$34, "fg", _v$7, _p$.t));
-      _v$8 !== _p$.a && (_p$.a = _$setProp(_el$37, "fg", _v$8, _p$.a));
+      var _v$9 = theme().backgroundElement, _v$0 = theme().primary, _v$1 = theme().text;
+      _v$9 !== _p$.e && (_p$.e = _$setProp(_el$35, "backgroundColor", _v$9, _p$.e));
+      _v$0 !== _p$.t && (_p$.t = _$setProp(_el$36, "fg", _v$0, _p$.t));
+      _v$1 !== _p$.a && (_p$.a = _$setProp(_el$39, "fg", _v$1, _p$.a));
       return _p$;
     }, {
       e: undefined,
       t: undefined,
       a: undefined
     });
-    return _el$33;
+    return _el$35;
   })();
 }
 function waitingReason(api, id, activity) {
@@ -784,13 +735,13 @@ function ObservedWait(props) {
       return props.reason;
     },
     get children() {
-      var _el$50 = _$createElement("text"), _el$51 = _$createTextNode(` \xB7 `), _el$52 = _$createTextNode(` dtk teramati`);
-      _$insertNode(_el$50, _el$51);
-      _$insertNode(_el$50, _el$52);
-      _$setProp(_el$50, "wrapMode", "word");
-      _$insert(_el$50, () => props.reason, _el$51);
-      _$insert(_el$50, seconds, _el$52);
-      return _el$50;
+      var _el$44 = _$createElement("text"), _el$45 = _$createTextNode(` \xB7 `), _el$46 = _$createTextNode(` dtk teramati`);
+      _$insertNode(_el$44, _el$45);
+      _$insertNode(_el$44, _el$46);
+      _$setProp(_el$44, "wrapMode", "word");
+      _$insert(_el$44, () => props.reason, _el$45);
+      _$insert(_el$44, seconds, _el$46);
+      return _el$44;
     }
   });
 }
@@ -806,29 +757,30 @@ function Overview(props) {
   const size = useTerminalDimensions();
   const limit = () => size().height < 35 ? 2 : 4;
   return (() => {
-    var _el$53 = _$createElement("box"), _el$54 = _$createElement("box"), _el$55 = _$createElement("text"), _el$56 = _$createElement("b"), _el$57 = _$createElement("text"), _el$58 = _$createTextNode(` \xB7 `);
-    _$insertNode(_el$53, _el$54);
-    _$setProp(_el$53, "gap", 1);
-    _$setProp(_el$53, "flexShrink", 0);
-    _$insertNode(_el$54, _el$55);
-    _$insertNode(_el$54, _el$57);
-    _$insertNode(_el$55, _el$56);
-    _$setProp(_el$55, "wrapMode", "char");
-    _$insert(_el$56, () => data().model);
-    _$insertNode(_el$57, _el$58);
-    _$insert(_el$57, () => data().agent ?? "Sesi baru", _el$58);
-    _$insert(_el$57, (() => {
-      var _c$8 = _$memo(() => activity().status?.type === "busy");
-      return () => _c$8() ? "Bekerja" : activity().status?.type === "retry" ? "Mencoba ulang" : "Siap";
+    var _el$47 = _$createElement("box"), _el$48 = _$createElement("box"), _el$49 = _$createElement("text"), _el$50 = _$createElement("b"), _el$51 = _$createElement("text"), _el$52 = _$createTextNode(` \xB7 `), _el$53 = _$createElement("box");
+    _$insertNode(_el$47, _el$48);
+    _$insertNode(_el$47, _el$53);
+    _$setProp(_el$47, "gap", 1);
+    _$setProp(_el$47, "flexShrink", 0);
+    _$insertNode(_el$48, _el$49);
+    _$insertNode(_el$48, _el$51);
+    _$insertNode(_el$49, _el$50);
+    _$setProp(_el$49, "wrapMode", "char");
+    _$insert(_el$50, () => data().model);
+    _$insertNode(_el$51, _el$52);
+    _$insert(_el$51, () => data().agent ?? "Sesi baru", _el$52);
+    _$insert(_el$51, (() => {
+      var _c$5 = _$memo(() => activity().status?.type === "busy");
+      return () => _c$5() ? "Bekerja" : activity().status?.type === "retry" ? "Mencoba ulang" : "Siap";
     })(), null);
-    _$insert(_el$53, _$createComponent(ObservedWait, {
+    _$insert(_el$47, _$createComponent(ObservedWait, {
       get reason() {
         return waitingReason(props.api, props.id, activity());
       },
       get session() {
         return props.id;
       }
-    }), null);
+    }), _el$53);
     _$insert(_el$53, _$createComponent(AsyncIdentity, {
       get api() {
         return props.api;
@@ -839,29 +791,64 @@ function Overview(props) {
     }), null);
     _$insert(_el$53, _$createComponent(Show, {
       get when() {
+        return agents().length > 0;
+      },
+      get children() {
+        return [_$createComponent(For, {
+          get each() {
+            return agents().slice(0, limit());
+          },
+          children: (row) => _$createComponent(SubagentCard, {
+            get api() {
+              return props.api;
+            },
+            get agent() {
+              return row.item;
+            },
+            get ended() {
+              return row.ended;
+            }
+          })
+        }), _$createComponent(Show, {
+          get when() {
+            return agents().length > limit();
+          },
+          get children() {
+            var _el$54 = _$createElement("text"), _el$55 = _$createTextNode(`+`), _el$56 = _$createTextNode(` agent lainnya`);
+            _$insertNode(_el$54, _el$55);
+            _$insertNode(_el$54, _el$56);
+            _$insert(_el$54, () => agents().length - limit(), _el$56);
+            _$effect((_$p) => _$setProp(_el$54, "fg", theme().textMuted, _$p));
+            return _el$54;
+          }
+        })];
+      }
+    }), null);
+    _$insert(_el$47, _$createComponent(Show, {
+      get when() {
         return activity().attention > 0;
       },
       get children() {
-        var _el$59 = _$createElement("box"), _el$60 = _$createElement("text"), _el$61 = _$createElement("b"), _el$62 = _$createTextNode(`Butuh jawaban \xB7 `), _el$63 = _$createElement("text");
+        var _el$57 = _$createElement("box"), _el$58 = _$createElement("text"), _el$59 = _$createElement("b"), _el$60 = _$createTextNode(`Butuh jawaban \xB7 `), _el$61 = _$createElement("text");
+        _$insertNode(_el$57, _el$58);
+        _$insertNode(_el$57, _el$61);
+        _$insertNode(_el$58, _el$59);
         _$insertNode(_el$59, _el$60);
-        _$insertNode(_el$59, _el$63);
-        _$insertNode(_el$60, _el$61);
-        _$insertNode(_el$61, _el$62);
-        _$insert(_el$61, () => activity().attention, null);
-        _$insertNode(_el$63, _$createTextNode(`Periksa permintaan di percakapan.`));
+        _$insert(_el$59, () => activity().attention, null);
+        _$insertNode(_el$61, _$createTextNode(`Periksa permintaan di percakapan.`));
         _$effect((_p$) => {
-          var _v$1 = theme().warning, _v$10 = theme().textMuted;
-          _v$1 !== _p$.e && (_p$.e = _$setProp(_el$60, "fg", _v$1, _p$.e));
-          _v$10 !== _p$.t && (_p$.t = _$setProp(_el$63, "fg", _v$10, _p$.t));
+          var _v$10 = theme().warning, _v$11 = theme().textMuted;
+          _v$10 !== _p$.e && (_p$.e = _$setProp(_el$58, "fg", _v$10, _p$.e));
+          _v$11 !== _p$.t && (_p$.t = _$setProp(_el$61, "fg", _v$11, _p$.t));
           return _p$;
         }, {
           e: undefined,
           t: undefined
         });
-        return _el$59;
+        return _el$57;
       }
     }), null);
-    _$insert(_el$53, _$createComponent(InfoCard, {
+    _$insert(_el$47, _$createComponent(InfoCard, {
       get api() {
         return props.api;
       },
@@ -877,135 +864,92 @@ function Overview(props) {
             return mcp().length > 0;
           },
           get children() {
-            var _el$65 = _$createElement("box"), _el$66 = _$createElement("text"), _el$67 = _$createElement("b");
-            _$insertNode(_el$65, _el$66);
-            _$insertNode(_el$66, _el$67);
-            _$insertNode(_el$67, _$createTextNode(`MCP sedang dipakai / terakhir`));
-            _$insert(_el$65, _$createComponent(For, {
+            var _el$63 = _$createElement("box"), _el$64 = _$createElement("text"), _el$65 = _$createElement("b");
+            _$insertNode(_el$63, _el$64);
+            _$insertNode(_el$64, _el$65);
+            _$insertNode(_el$65, _$createTextNode(`MCP sedang dipakai / terakhir`));
+            _$insert(_el$63, _$createComponent(For, {
               get each() {
                 return mcp().slice(0, limit());
               },
               children: (row) => (() => {
-                var _el$100 = _$createElement("box"), _el$101 = _$createElement("text"), _el$102 = _$createTextNode(` \xB7 `);
-                _$insertNode(_el$100, _el$101);
-                _$insertNode(_el$101, _el$102);
-                _$setProp(_el$101, "wrapMode", "char");
-                _$insert(_el$101, () => row.item.name, _el$102);
-                _$insert(_el$101, (() => {
-                  var _c$9 = _$memo(() => row.ended === undefined);
-                  return () => _c$9() ? `${row.item.calls.length} panggilan` : "Baru berakhir";
+                var _el$85 = _$createElement("box"), _el$86 = _$createElement("text"), _el$87 = _$createTextNode(` \xB7 `);
+                _$insertNode(_el$85, _el$86);
+                _$insertNode(_el$86, _el$87);
+                _$setProp(_el$86, "wrapMode", "char");
+                _$insert(_el$86, () => row.item.name, _el$87);
+                _$insert(_el$86, (() => {
+                  var _c$8 = _$memo(() => row.ended === undefined);
+                  return () => _c$8() ? `${row.item.calls.length} panggilan` : "Baru berakhir";
                 })(), null);
-                _$insert(_el$100, _$createComponent(For, {
+                _$insert(_el$85, _$createComponent(For, {
                   get each() {
                     return row.item.calls.slice(0, 2);
                   },
                   children: (call) => (() => {
-                    var _el$103 = _$createElement("text"), _el$104 = _$createTextNode(` \xB7 `);
-                    _$insertNode(_el$103, _el$104);
-                    _$setProp(_el$103, "wrapMode", "word");
-                    _$insert(_el$103, () => detail(call).status, _el$104);
-                    _$insert(_el$103, () => detail(call).action, null);
-                    _$insert(_el$103, (() => {
-                      var _c$0 = _$memo(() => !!detail(call).target);
-                      return () => _c$0() ? ` \xB7 ${detail(call).target}` : "";
+                    var _el$88 = _$createElement("text"), _el$89 = _$createTextNode(` \xB7 `);
+                    _$insertNode(_el$88, _el$89);
+                    _$setProp(_el$88, "wrapMode", "word");
+                    _$insert(_el$88, () => detail(call).status, _el$89);
+                    _$insert(_el$88, () => detail(call).action, null);
+                    _$insert(_el$88, (() => {
+                      var _c$9 = _$memo(() => !!detail(call).target);
+                      return () => _c$9() ? ` \xB7 ${detail(call).target}` : "";
                     })(), null);
-                    _$effect((_$p) => _$setProp(_el$103, "fg", theme().textMuted, _$p));
-                    return _el$103;
+                    _$effect((_$p) => _$setProp(_el$88, "fg", theme().textMuted, _$p));
+                    return _el$88;
                   })()
                 }), null);
-                _$effect((_$p) => _$setProp(_el$101, "fg", theme().text, _$p));
-                return _el$100;
+                _$effect((_$p) => _$setProp(_el$86, "fg", theme().text, _$p));
+                return _el$85;
               })()
             }), null);
-            _$insert(_el$65, _$createComponent(Show, {
+            _$insert(_el$63, _$createComponent(Show, {
               get when() {
                 return mcp().length > limit();
               },
               get children() {
-                var _el$69 = _$createElement("text"), _el$70 = _$createTextNode(`+`), _el$71 = _$createTextNode(` MCP lainnya`);
-                _$insertNode(_el$69, _el$70);
-                _$insertNode(_el$69, _el$71);
-                _$insert(_el$69, () => mcp().length - limit(), _el$71);
-                _$effect((_$p) => _$setProp(_el$69, "fg", theme().textMuted, _$p));
-                return _el$69;
+                var _el$67 = _$createElement("text"), _el$68 = _$createTextNode(`+`), _el$69 = _$createTextNode(` MCP lainnya`);
+                _$insertNode(_el$67, _el$68);
+                _$insertNode(_el$67, _el$69);
+                _$insert(_el$67, () => mcp().length - limit(), _el$69);
+                _$effect((_$p) => _$setProp(_el$67, "fg", theme().textMuted, _$p));
+                return _el$67;
               }
             }), null);
-            _$effect((_$p) => _$setProp(_el$66, "fg", theme().primary, _$p));
-            return _el$65;
+            _$effect((_$p) => _$setProp(_el$64, "fg", theme().primary, _$p));
+            return _el$63;
           }
         }), _$createComponent(For, {
           get each() {
             return props.api.state.mcp().filter((server) => !mcp().some((row) => row.item.name === server.name));
           },
           children: (server) => (() => {
-            var _el$105 = _$createElement("text"), _el$106 = _$createTextNode(` \xB7 `);
-            _$insertNode(_el$105, _el$106);
-            _$setProp(_el$105, "wrapMode", "char");
-            _$insert(_el$105, () => server.name, _el$106);
-            _$insert(_el$105, (() => {
-              var _c$1 = _$memo(() => server.status === "connected");
-              return () => _c$1() ? "Terhubung \xB7 tidak sedang dipakai" : server.status;
+            var _el$90 = _$createElement("text"), _el$91 = _$createTextNode(` \xB7 `);
+            _$insertNode(_el$90, _el$91);
+            _$setProp(_el$90, "wrapMode", "char");
+            _$insert(_el$90, () => server.name, _el$91);
+            _$insert(_el$90, (() => {
+              var _c$0 = _$memo(() => server.status === "connected");
+              return () => _c$0() ? "Terhubung \xB7 tidak sedang dipakai" : server.status;
             })(), null);
-            _$effect((_$p) => _$setProp(_el$105, "fg", server.status === "connected" ? theme().textMuted : theme().warning, _$p));
-            return _el$105;
+            _$effect((_$p) => _$setProp(_el$90, "fg", server.status === "connected" ? theme().textMuted : theme().warning, _$p));
+            return _el$90;
           })()
         }), _$createComponent(Show, {
           get when() {
             return !props.api.state.mcp().length;
           },
           get children() {
-            var _el$72 = _$createElement("text");
-            _$insertNode(_el$72, _$createTextNode(`Tidak ada server MCP.`));
-            _$effect((_$p) => _$setProp(_el$72, "fg", theme().textMuted, _$p));
-            return _el$72;
+            var _el$70 = _$createElement("text");
+            _$insertNode(_el$70, _$createTextNode(`Tidak ada server MCP.`));
+            _$effect((_$p) => _$setProp(_el$70, "fg", theme().textMuted, _$p));
+            return _el$70;
           }
         })];
       }
     }), null);
-    _$insert(_el$53, _$createComponent(Show, {
-      get when() {
-        return agents().length > 0;
-      },
-      get children() {
-        var _el$74 = _$createElement("box"), _el$75 = _$createElement("text"), _el$76 = _$createElement("b"), _el$77 = _$createTextNode(`Subagent \xB7 `);
-        _$insertNode(_el$74, _el$75);
-        _$insertNode(_el$75, _el$76);
-        _$insertNode(_el$76, _el$77);
-        _$insert(_el$76, () => agents().length, null);
-        _$insert(_el$74, _$createComponent(For, {
-          get each() {
-            return agents().slice(0, limit());
-          },
-          children: (row) => _$createComponent(SubagentCard, {
-            get api() {
-              return props.api;
-            },
-            get agent() {
-              return row.item;
-            },
-            get ended() {
-              return row.ended;
-            }
-          })
-        }), null);
-        _$insert(_el$74, _$createComponent(Show, {
-          get when() {
-            return agents().length > limit();
-          },
-          get children() {
-            var _el$78 = _$createElement("text"), _el$79 = _$createTextNode(`+`), _el$80 = _$createTextNode(` agent lainnya`);
-            _$insertNode(_el$78, _el$79);
-            _$insertNode(_el$78, _el$80);
-            _$insert(_el$78, () => agents().length - limit(), _el$80);
-            _$effect((_$p) => _$setProp(_el$78, "fg", theme().textMuted, _$p));
-            return _el$78;
-          }
-        }), null);
-        _$effect((_$p) => _$setProp(_el$75, "fg", theme().primary, _$p));
-        return _el$74;
-      }
-    }), null);
-    _$insert(_el$53, _$createComponent(InfoCard, {
+    _$insert(_el$47, _$createComponent(InfoCard, {
       get api() {
         return props.api;
       },
@@ -1021,129 +965,115 @@ function Overview(props) {
             return tools().length > 0;
           },
           get children() {
-            var _el$81 = _$createElement("box");
-            _$insert(_el$81, _$createComponent(For, {
+            var _el$72 = _$createElement("box");
+            _$insert(_el$72, _$createComponent(For, {
               get each() {
                 return tools().slice(0, limit());
               },
               children: (row) => (() => {
-                var _el$107 = _$createElement("box"), _el$108 = _$createElement("text"), _el$109 = _$createTextNode(` \xB7 `);
-                _$insertNode(_el$107, _el$108);
-                _$insertNode(_el$108, _el$109);
-                _$setProp(_el$108, "wrapMode", "word");
-                _$insert(_el$108, () => detail(row.item).action, _el$109);
-                _$insert(_el$108, () => detail(row.item).status, null);
-                _$insert(_el$108, (() => {
-                  var _c$10 = _$memo(() => !!detail(row.item).target);
-                  return () => _c$10() ? ` \xB7 ${detail(row.item).target}` : "";
+                var _el$92 = _$createElement("box"), _el$93 = _$createElement("text"), _el$94 = _$createTextNode(` \xB7 `);
+                _$insertNode(_el$92, _el$93);
+                _$insertNode(_el$93, _el$94);
+                _$setProp(_el$93, "wrapMode", "word");
+                _$insert(_el$93, () => detail(row.item).action, _el$94);
+                _$insert(_el$93, () => detail(row.item).status, null);
+                _$insert(_el$93, (() => {
+                  var _c$1 = _$memo(() => !!detail(row.item).target);
+                  return () => _c$1() ? ` \xB7 ${detail(row.item).target}` : "";
                 })(), null);
-                _$insert(_el$107, _$createComponent(Show, {
+                _$insert(_el$92, _$createComponent(Show, {
                   get when() {
                     return detail(row.item).result;
                   },
                   get children() {
-                    var _el$110 = _$createElement("text");
-                    _$setProp(_el$110, "wrapMode", "word");
-                    _$insert(_el$110, () => detail(row.item).result);
-                    _$effect((_$p) => _$setProp(_el$110, "fg", theme().textMuted, _$p));
-                    return _el$110;
+                    var _el$95 = _$createElement("text");
+                    _$setProp(_el$95, "wrapMode", "word");
+                    _$insert(_el$95, () => detail(row.item).result);
+                    _$effect((_$p) => _$setProp(_el$95, "fg", theme().textMuted, _$p));
+                    return _el$95;
                   }
                 }), null);
-                _$effect((_$p) => _$setProp(_el$108, "fg", theme().text, _$p));
-                return _el$107;
+                _$effect((_$p) => _$setProp(_el$93, "fg", theme().text, _$p));
+                return _el$92;
               })()
             }), null);
-            _$insert(_el$81, _$createComponent(Show, {
+            _$insert(_el$72, _$createComponent(Show, {
               get when() {
                 return tools().length > limit();
               },
               get children() {
-                var _el$82 = _$createElement("text"), _el$83 = _$createTextNode(`+`), _el$84 = _$createTextNode(` tool lainnya`);
-                _$insertNode(_el$82, _el$83);
-                _$insertNode(_el$82, _el$84);
-                _$insert(_el$82, () => tools().length - limit(), _el$84);
-                _$effect((_$p) => _$setProp(_el$82, "fg", theme().textMuted, _$p));
-                return _el$82;
+                var _el$73 = _$createElement("text"), _el$74 = _$createTextNode(`+`), _el$75 = _$createTextNode(` tool lainnya`);
+                _$insertNode(_el$73, _el$74);
+                _$insertNode(_el$73, _el$75);
+                _$insert(_el$73, () => tools().length - limit(), _el$75);
+                _$effect((_$p) => _$setProp(_el$73, "fg", theme().textMuted, _$p));
+                return _el$73;
               }
             }), null);
-            return _el$81;
+            return _el$72;
           }
         }), _$createComponent(Show, {
           get when() {
             return _$memo(() => !!(activity().latest && !tools().slice(0, limit()).some((row) => row.item.callID === activity().latest?.callID) && !mcp().some((row) => row.item.calls.some((call) => call.callID === activity().latest?.callID)) && !["task", "subagent"].includes(activity().latest.tool)))() ? activity().latest : undefined;
           },
           children: (latest) => (() => {
-            var _el$111 = _$createElement("box"), _el$112 = _$createElement("text"), _el$113 = _$createElement("text");
-            _$insertNode(_el$111, _el$112);
-            _$insertNode(_el$111, _el$113);
-            _$setProp(_el$112, "wrapMode", "word");
-            _$insert(_el$112, () => activityDetail(latest()).target || activityDetail(latest()).action);
-            _$setProp(_el$113, "wrapMode", "word");
-            _$insert(_el$113, () => activityDetail(latest()).result || "Masih diproses; belum ada hasil akhir.");
+            var _el$96 = _$createElement("box"), _el$97 = _$createElement("text"), _el$98 = _$createElement("text");
+            _$insertNode(_el$96, _el$97);
+            _$insertNode(_el$96, _el$98);
+            _$setProp(_el$97, "wrapMode", "word");
+            _$insert(_el$97, () => activityDetail(latest()).target || activityDetail(latest()).action);
+            _$setProp(_el$98, "wrapMode", "word");
+            _$insert(_el$98, () => activityDetail(latest()).result || "Masih diproses; belum ada hasil akhir.");
             _$effect((_p$) => {
-              var _v$13 = theme().text, _v$14 = theme().textMuted;
-              _v$13 !== _p$.e && (_p$.e = _$setProp(_el$112, "fg", _v$13, _p$.e));
-              _v$14 !== _p$.t && (_p$.t = _$setProp(_el$113, "fg", _v$14, _p$.t));
+              var _v$14 = theme().text, _v$15 = theme().textMuted;
+              _v$14 !== _p$.e && (_p$.e = _$setProp(_el$97, "fg", _v$14, _p$.e));
+              _v$15 !== _p$.t && (_p$.t = _$setProp(_el$98, "fg", _v$15, _p$.t));
               return _p$;
             }, {
               e: undefined,
               t: undefined
             });
-            return _el$111;
+            return _el$96;
           })()
         }), (() => {
-          var _el$85 = _$createElement("text");
-          _$insertNode(_el$85, _$createTextNode(`Hasil tes: lihat keluaran pengujian di percakapan; status tool bukan bukti tes lulus.`));
-          _$setProp(_el$85, "wrapMode", "word");
-          _$effect((_$p) => _$setProp(_el$85, "fg", theme().textMuted, _$p));
-          return _el$85;
+          var _el$76 = _$createElement("text");
+          _$insertNode(_el$76, _$createTextNode(`Hasil tes: lihat keluaran pengujian di percakapan; status tool bukan bukti tes lulus.`));
+          _$setProp(_el$76, "wrapMode", "word");
+          _$effect((_$p) => _$setProp(_el$76, "fg", theme().textMuted, _$p));
+          return _el$76;
         })()];
       }
     }), null);
-    _$insert(_el$53, _$createComponent(InfoCard, {
+    _$insert(_el$47, _$createComponent(InfoCard, {
       get api() {
         return props.api;
       },
       name: "context",
       title: "Laporan token provider",
       get summary() {
-        return _$memo(() => data().used === undefined)() ? "Token belum dilaporkan" : `${compact(data().used ?? NaN)} token \xB7 laporan terakhir`;
+        return _$memo(() => data().used === undefined)() ? "Token belum dilaporkan" : `${compact(data().used ?? NaN)} token \xB7 ${data().percent === undefined ? "konteks \u2014" : `${data().percent}% konteks`} \xB7 $${data().cost.toFixed(4)}`;
       },
       get children() {
-        return [(() => {
-          var _el$87 = _$createElement("text"), _el$88 = _$createTextNode(`Provider \xB7 `);
-          _$insertNode(_el$87, _el$88);
-          _$setProp(_el$87, "wrapMode", "char");
-          _$insert(_el$87, () => data().provider, null);
-          _$effect((_$p) => _$setProp(_el$87, "fg", theme().textMuted, _$p));
-          return _el$87;
-        })(), (() => {
-          var _el$89 = _$createElement("text");
-          _$insertNode(_el$89, _$createTextNode(`Konteks aktif DCP \xB7 belum diukur`));
-          _$effect((_$p) => _$setProp(_el$89, "fg", theme().textMuted, _$p));
-          return _el$89;
-        })(), (() => {
-          var _el$91 = _$createElement("text");
-          _$insertNode(_el$91, _$createTextNode(`Laporan ini menjumlahkan input, output, reasoning, dan cache dari pesan model terakhir yang melaporkan penggunaan.`));
-          _$setProp(_el$91, "wrapMode", "word");
-          _$effect((_$p) => _$setProp(_el$91, "fg", theme().textMuted, _$p));
-          return _el$91;
-        })(), (() => {
-          var _el$93 = _$createElement("text");
-          _$insertNode(_el$93, _$createTextNode(`Periksa /dcp untuk statistik kompresi. Angka provider bukan ukuran pesan yang akan dikirim sesudah DCP.`));
-          _$setProp(_el$93, "wrapMode", "word");
-          _$effect((_$p) => _$setProp(_el$93, "fg", theme().textMuted, _$p));
-          return _el$93;
-        })(), (() => {
-          var _el$95 = _$createElement("text"), _el$96 = _$createTextNode(`Biaya tercatat \xB7 $`);
-          _$insertNode(_el$95, _el$96);
-          _$insert(_el$95, () => data().cost.toFixed(4), null);
-          _$effect((_$p) => _$setProp(_el$95, "fg", theme().textMuted, _$p));
-          return _el$95;
-        })()];
+        var _el$78 = _$createElement("text"), _el$79 = _$createTextNode(` \xB7 `), _el$80 = _$createTextNode(` \xB7 `), _el$81 = _$createTextNode(` \xB7 $`);
+        _$insertNode(_el$78, _el$79);
+        _$insertNode(_el$78, _el$80);
+        _$insertNode(_el$78, _el$81);
+        _$setProp(_el$78, "wrapMode", "char");
+        _$insert(_el$78, () => data().provider, _el$79);
+        _$insert(_el$78, (() => {
+          var _c$6 = _$memo(() => data().used === undefined);
+          return () => _c$6() ? "\u2014 token" : `${compact(data().used ?? NaN)} token`;
+        })(), _el$80);
+        _$insert(_el$78, (() => {
+          var _c$7 = _$memo(() => data().percent === undefined);
+          return () => _c$7() ? "konteks belum diukur" : `${data().percent}% konteks`;
+        })(), _el$81);
+        _$insert(_el$78, () => data().cost.toFixed(4), null);
+        _$effect((_$p) => _$setProp(_el$78, "fg", theme().textMuted, _$p));
+        return _el$78;
       }
     }), null);
-    _$insert(_el$53, _$createComponent(InfoCard, {
+    _$insert(_el$47, _$createComponent(InfoCard, {
       get api() {
         return props.api;
       },
@@ -1160,21 +1090,21 @@ function Overview(props) {
           },
           get fallback() {
             return (() => {
-              var _el$114 = _$createElement("text");
-              _$insertNode(_el$114, _$createTextNode(`Belum ada daftar tugas di sesi ini.`));
-              _$effect((_$p) => _$setProp(_el$114, "fg", theme().textMuted, _$p));
-              return _el$114;
+              var _el$99 = _$createElement("text");
+              _$insertNode(_el$99, _$createTextNode(`Belum ada daftar tugas di sesi ini.`));
+              _$effect((_$p) => _$setProp(_el$99, "fg", theme().textMuted, _$p));
+              return _el$99;
             })();
           },
           get children() {
             return [(() => {
-              var _el$97 = _$createElement("text"), _el$98 = _$createTextNode(` berjalan \xB7 `), _el$99 = _$createTextNode(` antre`);
-              _$insertNode(_el$97, _el$98);
-              _$insertNode(_el$97, _el$99);
-              _$insert(_el$97, () => activity().todos.filter((todo) => todo.status === "in_progress").length, _el$98);
-              _$insert(_el$97, () => activity().todos.filter((todo) => todo.status === "pending").length, _el$99);
-              _$effect((_$p) => _$setProp(_el$97, "fg", theme().textMuted, _$p));
-              return _el$97;
+              var _el$82 = _$createElement("text"), _el$83 = _$createTextNode(` berjalan \xB7 `), _el$84 = _$createTextNode(` antre`);
+              _$insertNode(_el$82, _el$83);
+              _$insertNode(_el$82, _el$84);
+              _$insert(_el$82, () => activity().todos.filter((todo) => todo.status === "in_progress").length, _el$83);
+              _$insert(_el$82, () => activity().todos.filter((todo) => todo.status === "pending").length, _el$84);
+              _$effect((_$p) => _$setProp(_el$82, "fg", theme().textMuted, _$p));
+              return _el$82;
             })(), _$createComponent(For, {
               get each() {
                 return [...props.api.state.session.todo(props.id)].sort((a, b) => ({
@@ -1188,33 +1118,33 @@ function Overview(props) {
                 }[b.status] ?? 3));
               },
               children: (todo) => (() => {
-                var _el$116 = _$createElement("box"), _el$117 = _$createElement("text"), _el$118 = _$createElement("text");
-                _$insertNode(_el$116, _el$117);
-                _$insertNode(_el$116, _el$118);
-                _$setProp(_el$116, "marginTop", 1);
-                _$insert(_el$117, (() => {
-                  var _c$11 = _$memo(() => todo.status === "completed");
-                  return () => _c$11() ? "\u2713 Selesai" : todo.status === "in_progress" ? "\u203A Sedang dikerjakan" : "\xB7 Menunggu";
+                var _el$101 = _$createElement("box"), _el$102 = _$createElement("text"), _el$103 = _$createElement("text");
+                _$insertNode(_el$101, _el$102);
+                _$insertNode(_el$101, _el$103);
+                _$setProp(_el$101, "marginTop", 1);
+                _$insert(_el$102, (() => {
+                  var _c$10 = _$memo(() => todo.status === "completed");
+                  return () => _c$10() ? "\u2713 Selesai" : todo.status === "in_progress" ? "\u203A Sedang dikerjakan" : "\xB7 Menunggu";
                 })());
-                _$setProp(_el$118, "wrapMode", "word");
-                _$insert(_el$118, () => todo.content);
+                _$setProp(_el$103, "wrapMode", "word");
+                _$insert(_el$103, () => todo.content);
                 _$effect((_p$) => {
-                  var _v$15 = todo.status === "in_progress" ? theme().primary : theme().textMuted, _v$16 = todo.status === "completed" ? theme().textMuted : theme().text;
-                  _v$15 !== _p$.e && (_p$.e = _$setProp(_el$117, "fg", _v$15, _p$.e));
-                  _v$16 !== _p$.t && (_p$.t = _$setProp(_el$118, "fg", _v$16, _p$.t));
+                  var _v$16 = todo.status === "in_progress" ? theme().primary : theme().textMuted, _v$17 = todo.status === "completed" ? theme().textMuted : theme().text;
+                  _v$16 !== _p$.e && (_p$.e = _$setProp(_el$102, "fg", _v$16, _p$.e));
+                  _v$17 !== _p$.t && (_p$.t = _$setProp(_el$103, "fg", _v$17, _p$.t));
                   return _p$;
                 }, {
                   e: undefined,
                   t: undefined
                 });
-                return _el$116;
+                return _el$101;
               })()
             })];
           }
         });
       }
     }), null);
-    _$insert(_el$53, _$createComponent(WorkspaceCard, {
+    _$insert(_el$47, _$createComponent(WorkspaceCard, {
       get api() {
         return props.api;
       },
@@ -1223,15 +1153,15 @@ function Overview(props) {
       }
     }), null);
     _$effect((_p$) => {
-      var _v$11 = theme().text, _v$12 = theme().textMuted;
-      _v$11 !== _p$.e && (_p$.e = _$setProp(_el$55, "fg", _v$11, _p$.e));
-      _v$12 !== _p$.t && (_p$.t = _$setProp(_el$57, "fg", _v$12, _p$.t));
+      var _v$12 = theme().text, _v$13 = theme().textMuted;
+      _v$12 !== _p$.e && (_p$.e = _$setProp(_el$49, "fg", _v$12, _p$.e));
+      _v$13 !== _p$.t && (_p$.t = _$setProp(_el$51, "fg", _v$13, _p$.t));
       return _p$;
     }, {
       e: undefined,
       t: undefined
     });
-    return _el$53;
+    return _el$47;
   })();
 }
 function SidebarPresence(props) {
@@ -1248,14 +1178,14 @@ function ResponsiveDock(props) {
   const open = () => props.api.ui.dialog.replace(() => _$createComponent(props.api.ui.Dialog, {
     onClose: () => props.api.ui.dialog.clear(),
     get children() {
-      var _el$119 = _$createElement("box"), _el$120 = _$createElement("text"), _el$121 = _$createElement("b"), _el$123 = _$createTextNode(` \xB7 Esc tutup`), _el$124 = _$createElement("scrollbox");
-      _$insertNode(_el$119, _el$120);
-      _$insertNode(_el$119, _el$124);
-      _$setProp(_el$119, "padding", 1);
-      _$insertNode(_el$120, _el$121);
-      _$insertNode(_el$120, _el$123);
-      _$insertNode(_el$121, _$createTextNode(`Studio \xB7 Detail sesi`));
-      _$insert(_el$124, _$createComponent(Overview, {
+      var _el$104 = _$createElement("box"), _el$105 = _$createElement("text"), _el$106 = _$createElement("b"), _el$108 = _$createTextNode(` \xB7 Esc tutup`), _el$109 = _$createElement("scrollbox");
+      _$insertNode(_el$104, _el$105);
+      _$insertNode(_el$104, _el$109);
+      _$setProp(_el$104, "padding", 1);
+      _$insertNode(_el$105, _el$106);
+      _$insertNode(_el$105, _el$108);
+      _$insertNode(_el$106, _$createTextNode(`Studio \xB7 Detail sesi`));
+      _$insert(_el$109, _$createComponent(Overview, {
         get api() {
           return props.api;
         },
@@ -1265,15 +1195,15 @@ function ResponsiveDock(props) {
         mini: true
       }));
       _$effect((_p$) => {
-        var _v$17 = theme().primary, _v$18 = Math.max(5, size().height - 10);
-        _v$17 !== _p$.e && (_p$.e = _$setProp(_el$120, "fg", _v$17, _p$.e));
-        _v$18 !== _p$.t && (_p$.t = _$setProp(_el$124, "height", _v$18, _p$.t));
+        var _v$18 = theme().primary, _v$19 = Math.max(5, size().height - 10);
+        _v$18 !== _p$.e && (_p$.e = _$setProp(_el$105, "fg", _v$18, _p$.e));
+        _v$19 !== _p$.t && (_p$.t = _$setProp(_el$109, "height", _v$19, _p$.t));
         return _p$;
       }, {
         e: undefined,
         t: undefined
       });
-      return _el$119;
+      return _el$104;
     }
   }));
   const unregister = props.api.command?.register(() => [{
@@ -1292,78 +1222,78 @@ function ResponsiveDock(props) {
       return !props.sidebarVisible;
     },
     get children() {
-      var _el$125 = _$createElement("box"), _el$126 = _$createElement("box"), _el$127 = _$createElement("text"), _el$128 = _$createElement("b"), _el$129 = _$createTextNode(`ASYNC \xB7 `), _el$130 = _$createElement("text"), _el$131 = _$createElement("text"), _el$132 = _$createElement("text"), _el$133 = _$createTextNode(`\u25CF `), _el$134 = _$createTextNode(` run \xB7 \u2713 `), _el$135 = _$createTextNode(` done \xB7 \u2715 `), _el$136 = _$createTextNode(` err \xB7 \u03A3 `), _el$137 = _$createElement("text"), _el$138 = _$createElement("text"), _el$139 = _$createElement("box"), _el$140 = _$createElement("text");
-      _$insertNode(_el$125, _el$126);
-      _$setProp(_el$125, "flexDirection", "row");
-      _$setProp(_el$125, "width", "100%");
-      _$setProp(_el$125, "height", 8);
-      _$setProp(_el$125, "flexShrink", 0);
-      _$setProp(_el$125, "gap", 1);
-      _$setProp(_el$125, "paddingLeft", 1);
-      _$setProp(_el$125, "paddingRight", 1);
-      _$insertNode(_el$126, _el$127);
-      _$insertNode(_el$126, _el$130);
-      _$insertNode(_el$126, _el$131);
-      _$insertNode(_el$126, _el$132);
-      _$insertNode(_el$126, _el$137);
-      _$insertNode(_el$126, _el$138);
-      _$insertNode(_el$126, _el$139);
-      _$setProp(_el$126, "flexGrow", 1);
-      _$setProp(_el$126, "minWidth", 0);
-      _$setProp(_el$126, "flexShrink", 1);
-      _$insertNode(_el$127, _el$128);
-      _$setProp(_el$127, "height", 1);
-      _$insertNode(_el$128, _el$129);
-      _$insert(_el$128, () => data().agent ?? "Sesi", null);
-      _$setProp(_el$130, "height", 1);
-      _$insert(_el$130, (() => {
-        var _c$12 = _$memo(() => !!activity().attention);
-        return () => _c$12() ? `${activity().attention} permintaan menunggu jawaban` : _$memo(() => identity().running > 0)() ? `${identity().running} subagent berjalan` : "Siap";
+      var _el$110 = _$createElement("box"), _el$111 = _$createElement("box"), _el$112 = _$createElement("text"), _el$113 = _$createElement("b"), _el$114 = _$createTextNode(`ASYNC \xB7 `), _el$115 = _$createElement("text"), _el$116 = _$createElement("text"), _el$117 = _$createElement("text"), _el$118 = _$createTextNode(`\u25CF `), _el$119 = _$createTextNode(` run \xB7 \u2713 `), _el$120 = _$createTextNode(` done \xB7 \u2715 `), _el$121 = _$createTextNode(` err \xB7 \u03A3 `), _el$122 = _$createElement("text"), _el$123 = _$createElement("text"), _el$124 = _$createElement("box"), _el$125 = _$createElement("text");
+      _$insertNode(_el$110, _el$111);
+      _$setProp(_el$110, "flexDirection", "row");
+      _$setProp(_el$110, "width", "100%");
+      _$setProp(_el$110, "height", 8);
+      _$setProp(_el$110, "flexShrink", 0);
+      _$setProp(_el$110, "gap", 1);
+      _$setProp(_el$110, "paddingLeft", 1);
+      _$setProp(_el$110, "paddingRight", 1);
+      _$insertNode(_el$111, _el$112);
+      _$insertNode(_el$111, _el$115);
+      _$insertNode(_el$111, _el$116);
+      _$insertNode(_el$111, _el$117);
+      _$insertNode(_el$111, _el$122);
+      _$insertNode(_el$111, _el$123);
+      _$insertNode(_el$111, _el$124);
+      _$setProp(_el$111, "flexGrow", 1);
+      _$setProp(_el$111, "minWidth", 0);
+      _$setProp(_el$111, "flexShrink", 1);
+      _$insertNode(_el$112, _el$113);
+      _$setProp(_el$112, "height", 1);
+      _$insertNode(_el$113, _el$114);
+      _$insert(_el$113, () => data().agent ?? "Sesi", null);
+      _$setProp(_el$115, "height", 1);
+      _$insert(_el$115, (() => {
+        var _c$11 = _$memo(() => !!activity().attention);
+        return () => _c$11() ? `${activity().attention} permintaan menunggu jawaban` : _$memo(() => identity().running > 0)() ? `${identity().running} subagent berjalan` : "Siap";
       })());
-      _$setProp(_el$131, "height", 1);
-      _$insert(_el$131, () => data().model, null);
-      _$insert(_el$131, (() => {
-        var _c$13 = _$memo(() => data().used === undefined);
-        return () => _c$13() ? "" : ` \xB7 ${compact(data().used ?? NaN)} token (laporan)`;
+      _$setProp(_el$116, "height", 1);
+      _$insert(_el$116, () => data().model, null);
+      _$insert(_el$116, (() => {
+        var _c$12 = _$memo(() => data().used === undefined);
+        return () => _c$12() ? "" : ` \xB7 ${compact(data().used ?? NaN)} token (laporan)`;
       })(), null);
-      _$insertNode(_el$132, _el$133);
-      _$insertNode(_el$132, _el$134);
-      _$insertNode(_el$132, _el$135);
-      _$insertNode(_el$132, _el$136);
-      _$setProp(_el$132, "height", 1);
-      _$insert(_el$132, () => identity().running, _el$134);
-      _$insert(_el$132, () => identity().done, _el$135);
-      _$insert(_el$132, () => identity().error, _el$136);
-      _$insert(_el$132, () => identity().total, null);
-      _$setProp(_el$137, "height", 1);
-      _$insert(_el$137, (() => {
+      _$insertNode(_el$117, _el$118);
+      _$insertNode(_el$117, _el$119);
+      _$insertNode(_el$117, _el$120);
+      _$insertNode(_el$117, _el$121);
+      _$setProp(_el$117, "height", 1);
+      _$insert(_el$117, () => identity().running, _el$119);
+      _$insert(_el$117, () => identity().done, _el$120);
+      _$insert(_el$117, () => identity().error, _el$121);
+      _$insert(_el$117, () => identity().total, null);
+      _$setProp(_el$122, "height", 1);
+      _$insert(_el$122, (() => {
+        var _c$13 = _$memo(() => !!activity().latest);
+        return () => _c$13() ? `${activityDetail(activity().latest).status} \xB7 ${activityDetail(activity().latest).action}` : "Belum ada aktivitas tool";
+      })());
+      _$setProp(_el$123, "height", 1);
+      _$insert(_el$123, (() => {
         var _c$14 = _$memo(() => !!activity().latest);
-        return () => _c$14() ? `${activityDetail(activity().latest).status} \xB7 ${activityDetail(activity().latest).action}` : "Belum ada aktivitas tool";
+        return () => _c$14() ? activityDetail(activity().latest).target : "";
       })());
-      _$setProp(_el$138, "height", 1);
-      _$insert(_el$138, (() => {
-        var _c$15 = _$memo(() => !!activity().latest);
-        return () => _c$15() ? activityDetail(activity().latest).target : "";
-      })());
-      _$insertNode(_el$139, _el$140);
-      _$setProp(_el$139, "onMouseDown", (event) => {
+      _$insertNode(_el$124, _el$125);
+      _$setProp(_el$124, "onMouseDown", (event) => {
         if (event.button === 0) {
           event.stopPropagation();
           open();
         }
       });
-      _$insertNode(_el$140, _$createTextNode(`/studio-panel \xB7 detail`));
-      _$setProp(_el$140, "height", 1);
+      _$insertNode(_el$125, _$createTextNode(`/studio-panel \xB7 detail`));
+      _$setProp(_el$125, "height", 1);
       _$effect((_p$) => {
-        var _v$19 = theme().backgroundPanel, _v$20 = theme().primary, _v$21 = theme().text, _v$22 = theme().textMuted, _v$23 = theme().text, _v$24 = theme().text, _v$25 = theme().textMuted, _v$26 = theme().primary;
-        _v$19 !== _p$.e && (_p$.e = _$setProp(_el$125, "backgroundColor", _v$19, _p$.e));
-        _v$20 !== _p$.t && (_p$.t = _$setProp(_el$127, "fg", _v$20, _p$.t));
-        _v$21 !== _p$.a && (_p$.a = _$setProp(_el$130, "fg", _v$21, _p$.a));
-        _v$22 !== _p$.o && (_p$.o = _$setProp(_el$131, "fg", _v$22, _p$.o));
-        _v$23 !== _p$.i && (_p$.i = _$setProp(_el$132, "fg", _v$23, _p$.i));
-        _v$24 !== _p$.n && (_p$.n = _$setProp(_el$137, "fg", _v$24, _p$.n));
-        _v$25 !== _p$.s && (_p$.s = _$setProp(_el$138, "fg", _v$25, _p$.s));
-        _v$26 !== _p$.h && (_p$.h = _$setProp(_el$140, "fg", _v$26, _p$.h));
+        var _v$20 = theme().backgroundPanel, _v$21 = theme().primary, _v$22 = theme().text, _v$23 = theme().textMuted, _v$24 = theme().text, _v$25 = theme().text, _v$26 = theme().textMuted, _v$27 = theme().primary;
+        _v$20 !== _p$.e && (_p$.e = _$setProp(_el$110, "backgroundColor", _v$20, _p$.e));
+        _v$21 !== _p$.t && (_p$.t = _$setProp(_el$112, "fg", _v$21, _p$.t));
+        _v$22 !== _p$.a && (_p$.a = _$setProp(_el$115, "fg", _v$22, _p$.a));
+        _v$23 !== _p$.o && (_p$.o = _$setProp(_el$116, "fg", _v$23, _p$.o));
+        _v$24 !== _p$.i && (_p$.i = _$setProp(_el$117, "fg", _v$24, _p$.i));
+        _v$25 !== _p$.n && (_p$.n = _$setProp(_el$122, "fg", _v$25, _p$.n));
+        _v$26 !== _p$.s && (_p$.s = _$setProp(_el$123, "fg", _v$26, _p$.s));
+        _v$27 !== _p$.h && (_p$.h = _$setProp(_el$125, "fg", _v$27, _p$.h));
         return _p$;
       }, {
         e: undefined,
@@ -1375,7 +1305,7 @@ function ResponsiveDock(props) {
         s: undefined,
         h: undefined
       });
-      return _el$125;
+      return _el$110;
     }
   });
 }
@@ -1385,47 +1315,47 @@ function StatusBar(props) {
   const mcp = () => props.api.state.mcp();
   const plugins = () => props.api.plugins.list().filter((item) => item.source !== "internal");
   return (() => {
-    var _el$142 = _$createElement("box"), _el$143 = _$createElement("text"), _el$144 = _$createElement("b"), _el$151 = _$createElement("text");
-    _$insertNode(_el$142, _el$143);
-    _$insertNode(_el$142, _el$151);
-    _$setProp(_el$142, "flexDirection", "row");
-    _$setProp(_el$142, "justifyContent", "space-between");
-    _$setProp(_el$142, "paddingLeft", 1);
-    _$setProp(_el$142, "paddingRight", 1);
-    _$setProp(_el$142, "width", "100%");
-    _$insertNode(_el$143, _el$144);
-    _$insertNode(_el$144, _$createTextNode(`ASYNC`));
-    _$insert(_el$142, _$createComponent(Show, {
+    var _el$127 = _$createElement("box"), _el$128 = _$createElement("text"), _el$129 = _$createElement("b"), _el$136 = _$createElement("text");
+    _$insertNode(_el$127, _el$128);
+    _$insertNode(_el$127, _el$136);
+    _$setProp(_el$127, "flexDirection", "row");
+    _$setProp(_el$127, "justifyContent", "space-between");
+    _$setProp(_el$127, "paddingLeft", 1);
+    _$setProp(_el$127, "paddingRight", 1);
+    _$setProp(_el$127, "width", "100%");
+    _$insertNode(_el$128, _el$129);
+    _$insertNode(_el$129, _$createTextNode(`ASYNC`));
+    _$insert(_el$127, _$createComponent(Show, {
       get when() {
         return size().width >= 65;
       },
       get children() {
-        var _el$146 = _$createElement("text"), _el$147 = _$createTextNode(`/`), _el$148 = _$createTextNode(` MCP \xB7 `), _el$149 = _$createTextNode(`/`), _el$150 = _$createTextNode(` plugin TUI aktif`);
-        _$insertNode(_el$146, _el$147);
-        _$insertNode(_el$146, _el$148);
-        _$insertNode(_el$146, _el$149);
-        _$insertNode(_el$146, _el$150);
-        _$insert(_el$146, () => mcp().filter((item) => item.status === "connected").length, _el$147);
-        _$insert(_el$146, () => mcp().length, _el$148);
-        _$insert(_el$146, () => plugins().filter((item) => item.active).length, _el$149);
-        _$insert(_el$146, () => plugins().length, _el$150);
-        _$effect((_$p) => _$setProp(_el$146, "fg", theme().textMuted, _$p));
-        return _el$146;
+        var _el$131 = _$createElement("text"), _el$132 = _$createTextNode(`/`), _el$133 = _$createTextNode(` MCP \xB7 `), _el$134 = _$createTextNode(`/`), _el$135 = _$createTextNode(` plugin TUI aktif`);
+        _$insertNode(_el$131, _el$132);
+        _$insertNode(_el$131, _el$133);
+        _$insertNode(_el$131, _el$134);
+        _$insertNode(_el$131, _el$135);
+        _$insert(_el$131, () => mcp().filter((item) => item.status === "connected").length, _el$132);
+        _$insert(_el$131, () => mcp().length, _el$133);
+        _$insert(_el$131, () => plugins().filter((item) => item.active).length, _el$134);
+        _$insert(_el$131, () => plugins().length, _el$135);
+        _$effect((_$p) => _$setProp(_el$131, "fg", theme().textMuted, _$p));
+        return _el$131;
       }
-    }), _el$151);
-    _$insert(_el$151, () => props.api.state.vcs?.branch ?? "lokal");
+    }), _el$136);
+    _$insert(_el$136, () => props.api.state.vcs?.branch ?? "lokal");
     _$effect((_p$) => {
-      var _v$27 = theme().backgroundPanel, _v$28 = theme().primary, _v$29 = theme().textMuted;
-      _v$27 !== _p$.e && (_p$.e = _$setProp(_el$142, "backgroundColor", _v$27, _p$.e));
-      _v$28 !== _p$.t && (_p$.t = _$setProp(_el$143, "fg", _v$28, _p$.t));
-      _v$29 !== _p$.a && (_p$.a = _$setProp(_el$151, "fg", _v$29, _p$.a));
+      var _v$28 = theme().backgroundPanel, _v$29 = theme().primary, _v$30 = theme().textMuted;
+      _v$28 !== _p$.e && (_p$.e = _$setProp(_el$127, "backgroundColor", _v$28, _p$.e));
+      _v$29 !== _p$.t && (_p$.t = _$setProp(_el$128, "fg", _v$29, _p$.t));
+      _v$30 !== _p$.a && (_p$.a = _$setProp(_el$136, "fg", _v$30, _p$.a));
       return _p$;
     }, {
       e: undefined,
       t: undefined,
       a: undefined
     });
-    return _el$142;
+    return _el$127;
   })();
 }
 var plugin = {
@@ -1442,38 +1372,38 @@ var plugin = {
       slots: {
         sidebar_title(_ctx, props) {
           return (() => {
-            var _el$152 = _$createElement("box"), _el$153 = _$createElement("text"), _el$154 = _$createElement("b"), _el$156 = _$createElement("text"), _el$157 = _$createElement("b");
-            _$insertNode(_el$152, _el$153);
-            _$insertNode(_el$152, _el$156);
-            _$setProp(_el$152, "gap", 1);
-            _$setProp(_el$152, "paddingBottom", 1);
-            _$insertNode(_el$153, _el$154);
-            _$insertNode(_el$154, _$createTextNode(`ASYNC AGENT / SESI`));
-            _$insertNode(_el$156, _el$157);
-            _$setProp(_el$156, "wrapMode", "word");
-            _$insert(_el$157, () => props.title);
-            _$insert(_el$152, _$createComponent(Show, {
+            var _el$137 = _$createElement("box"), _el$138 = _$createElement("text"), _el$139 = _$createElement("b"), _el$141 = _$createElement("text"), _el$142 = _$createElement("b");
+            _$insertNode(_el$137, _el$138);
+            _$insertNode(_el$137, _el$141);
+            _$setProp(_el$137, "gap", 1);
+            _$setProp(_el$137, "paddingBottom", 1);
+            _$insertNode(_el$138, _el$139);
+            _$insertNode(_el$139, _$createTextNode(`ASYNC AGENT / SESI`));
+            _$insertNode(_el$141, _el$142);
+            _$setProp(_el$141, "wrapMode", "word");
+            _$insert(_el$142, () => props.title);
+            _$insert(_el$137, _$createComponent(Show, {
               get when() {
                 return props.share_url;
               },
               get children() {
-                var _el$158 = _$createElement("text");
-                _$setProp(_el$158, "wrapMode", "char");
-                _$insert(_el$158, () => props.share_url);
-                _$effect((_$p) => _$setProp(_el$158, "fg", api.theme.current.textMuted, _$p));
-                return _el$158;
+                var _el$143 = _$createElement("text");
+                _$setProp(_el$143, "wrapMode", "char");
+                _$insert(_el$143, () => props.share_url);
+                _$effect((_$p) => _$setProp(_el$143, "fg", api.theme.current.textMuted, _$p));
+                return _el$143;
               }
             }), null);
             _$effect((_p$) => {
-              var _v$30 = api.theme.current.primary, _v$31 = api.theme.current.text;
-              _v$30 !== _p$.e && (_p$.e = _$setProp(_el$153, "fg", _v$30, _p$.e));
-              _v$31 !== _p$.t && (_p$.t = _$setProp(_el$156, "fg", _v$31, _p$.t));
+              var _v$31 = api.theme.current.primary, _v$32 = api.theme.current.text;
+              _v$31 !== _p$.e && (_p$.e = _$setProp(_el$138, "fg", _v$31, _p$.e));
+              _v$32 !== _p$.t && (_p$.t = _$setProp(_el$141, "fg", _v$32, _p$.t));
               return _p$;
             }, {
               e: undefined,
               t: undefined
             });
-            return _el$152;
+            return _el$137;
           })();
         },
         sidebar_content(_ctx, props) {
@@ -1489,29 +1419,20 @@ var plugin = {
             }
           });
         },
-        sidebar_footer(_ctx, props) {
-          return _$createComponent(AsyncIdentity, {
-            api,
-            get id() {
-              return props.session_id;
-            },
-            compact: true
-          });
-        },
         home_footer() {
           return (() => {
-            var _el$159 = _$createElement("text"), _el$160 = _$createTextNode(`OPENCODE ASYNC AGENT \xB7 v`);
-            _$insertNode(_el$159, _el$160);
-            _$insert(_el$159, () => api.app.version, null);
-            _$effect((_$p) => _$setProp(_el$159, "fg", api.theme.current.textMuted, _$p));
-            return _el$159;
+            var _el$144 = _$createElement("text"), _el$145 = _$createTextNode(`OPENCODE ASYNC AGENT \xB7 v`);
+            _$insertNode(_el$144, _el$145);
+            _$insert(_el$144, () => api.app.version, null);
+            _$effect((_$p) => _$setProp(_el$144, "fg", api.theme.current.textMuted, _$p));
+            return _el$144;
           })();
         },
         app_bottom() {
           return (() => {
-            var _el$161 = _$createElement("box");
-            _$setProp(_el$161, "flexShrink", 0);
-            _$insert(_el$161, _$createComponent(Show, {
+            var _el$146 = _$createElement("box");
+            _$setProp(_el$146, "flexShrink", 0);
+            _$insert(_el$146, _$createComponent(Show, {
               get when() {
                 return sessionID();
               },
@@ -1525,10 +1446,10 @@ var plugin = {
                 }
               })
             }), null);
-            _$insert(_el$161, _$createComponent(StatusBar, {
+            _$insert(_el$146, _$createComponent(StatusBar, {
               api
             }), null);
-            return _el$161;
+            return _el$146;
           })();
         }
       }

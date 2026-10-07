@@ -42,12 +42,10 @@ function compact(value: number) {
   return Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value)
 }
 
-/** Formats a millisecond duration as `Xm Yd` / `Xj Ym Zd`. */
-function durationLabel(ms: number) {
-  const seconds = Math.max(0, Math.floor(ms / 1000))
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor(seconds / 60) % 60
-  return hours ? `${hours}j ${minutes}m ${seconds % 60}d` : `${minutes}m ${seconds % 60}d`
+/** Navigates the host to a real subagent session, ignoring synthetic row ids. */
+function navigateToSession(api: TuiPluginApi, target: string | undefined) {
+  if (!target || !target.startsWith("ses_")) return
+  api.route.navigate("session", { sessionID: target })
 }
 
 /** Total tokens reported by a child session's latest assistant message, if any. */
@@ -61,49 +59,21 @@ function childTokens(api: TuiPluginApi, childID: string) {
 
 type SubagentStatus = "running" | "done" | "error"
 
-type SubagentRow = {
-  id: string
-  label: string
-  status: SubagentStatus
-  elapsedMs: number
-  tokens: number | undefined
-  tokensPerSecond: number | undefined
-}
-
 /**
- * Derives the async-agent aggregate (running/done/error/total) and per-subagent
- * elapsed + tokens + tokens/sec from the parent session's task/subagent tool parts.
+ * Derives the async-agent aggregate (running/done/error/total) from the parent
+ * session's task/subagent tool parts. Per-subagent detail is rendered by SubagentCard.
  */
 function asyncIdentity(api: TuiPluginApi, id: string) {
-  const now = Date.now()
   const tools = api.state.session.messages(id)
     .flatMap((message) => api.state.part(message.id))
     .filter((part): part is ToolPart => part.type === "tool")
     .filter((part) => part.tool === "task" || part.tool === "subagent")
-  const rows: SubagentRow[] = tools.map((part) => {
-    const state = part.state
-    const child = state.status === "pending" ? undefined : typeof state.metadata?.sessionId === "string" ? state.metadata.sessionId : undefined
-    const status: SubagentStatus = state.status === "completed" ? "done" : state.status === "error" ? "error" : "running"
-    const started = state.status === "pending" ? undefined : state.time.start
-    const ended = state.status === "completed" || state.status === "error" ? state.time.end : undefined
-    const elapsedMs = started === undefined ? 0 : Math.max(0, (ended ?? now) - started)
-    const tokens = child ? childTokens(api, child) : undefined
-    const seconds = elapsedMs / 1000
-    return {
-      id: child ?? part.callID,
-      label: activityDetail(part).target || part.tool,
-      status,
-      elapsedMs,
-      tokens,
-      tokensPerSecond: tokens !== undefined && seconds > 0 ? tokens / seconds : undefined,
-    }
-  })
+  const statuses: SubagentStatus[] = tools.map((part) => part.state.status === "completed" ? "done" : part.state.status === "error" ? "error" : "running")
   return {
-    rows,
-    running: rows.filter((row) => row.status === "running").length,
-    done: rows.filter((row) => row.status === "done").length,
-    error: rows.filter((row) => row.status === "error").length,
-    total: rows.length,
+    running: statuses.filter((status) => status === "running").length,
+    done: statuses.filter((status) => status === "done").length,
+    error: statuses.filter((status) => status === "error").length,
+    total: statuses.length,
   }
 }
 
@@ -137,9 +107,11 @@ function subagentToasts(api: TuiPluginApi) {
   api.lifecycle.onDispose(() => { off(); previous.clear() })
 }
 
-export function InfoCard(props: { api: TuiPluginApi; name: string; title: string; summary: string; children: JSX.Element; initialOpen?: boolean; onOpen?: (open: boolean) => void }) {
+export function InfoCard(props: { api: TuiPluginApi; name: string; title: string; summary: string; children: JSX.Element; initialOpen?: boolean; onOpen?: (open: boolean) => void; onActivate?: () => void }) {
   const [open, setOpen] = createSignal(props.api.kv.get<boolean>(`studio.card.${props.name}`, props.initialOpen ?? false))
+  const [hovered, setHovered] = createSignal(false)
   const theme = () => props.api.theme.current
+  const clickable = () => Boolean(props.onActivate)
   createEffect(() => props.onOpen?.(open()))
   const toggle = () => {
     const next = !open()
@@ -154,11 +126,22 @@ export function InfoCard(props: { api: TuiPluginApi; name: string; title: string
     onSelect: (dialog) => { toggle(); dialog?.clear() },
   }])
   if (unregister) onCleanup(unregister)
-  return <box backgroundColor={theme().backgroundElement} paddingLeft={1} paddingRight={1}>
-    <box onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); toggle() } }}>
-      <text fg={theme().primary}><b>{open() ? "▾" : "▸"} {props.title}</b></text>
-      <text fg={theme().textMuted} wrapMode="word">{props.summary}</text>
+  const header = (event: { button: number; stopPropagation: () => void }) => {
+    if (event.button !== 0) return
+    event.stopPropagation()
+    if (props.onActivate) props.onActivate()
+    else toggle()
+  }
+  return <box
+    backgroundColor={hovered() ? theme().backgroundPanel : theme().backgroundElement}
+    paddingLeft={1} paddingRight={1}
+    onMouseOver={clickable() ? () => setHovered(true) : undefined}
+    onMouseOut={clickable() ? () => setHovered(false) : undefined}>
+    <box flexDirection="row" onMouseDown={header}>
+      <text fg={hovered() ? theme().accent : theme().primary} onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); toggle() } }}><b>{open() ? "▾" : "▸"}</b></text>
+      <text fg={hovered() ? theme().accent : theme().primary}><b> {props.title}{clickable() ? " →" : ""}</b></text>
     </box>
+    <text fg={theme().textMuted} wrapMode="word" onMouseDown={header}>{props.summary}</text>
     <Show when={open()}><box paddingTop={1} paddingBottom={1}>{props.children}</box></Show>
   </box>
 }
@@ -186,7 +169,14 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
     const clock = setInterval(() => setNow(Date.now()), 1000)
     onCleanup(() => { controller.abort(); clearInterval(poll); clearInterval(clock) })
   })
-  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Baru berakhir" : props.agent.label}`} summary={`${data()?.model ?? "Memuat model…"}\n${elapsedLabel(data()?.started, props.ended ?? now())} sejak sesi dibuat`}>
+  const elapsed = () => (data()?.started ?? 0) > 0 ? Math.max(0, (props.ended ?? now()) - data()!.started!) : 0
+  const tokens = () => childTokens(props.api, props.agent.id)
+  const rate = () => {
+    const value = tokens()
+    const seconds = elapsed() / 1000
+    return value !== undefined && seconds > 0 ? value / seconds : undefined
+  }
+  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Baru berakhir" : props.agent.label}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={`${data()?.model ?? "Memuat model…"}\n${elapsedLabel(data()?.started, props.ended ?? now())}${tokens() === undefined ? "" : ` · ${compact(tokens()!)} tok`}${rate() === undefined ? "" : ` · ${rate()!.toFixed(1)} t/s`}`}>
     <Show when={props.agent.target}><text fg={theme().text} wrapMode="word">{props.agent.target}</text></Show>
     <Show when={error()}><text fg={theme().warning}>{error()}</text></Show>
     <Show when={data()}>{(detail) => <box gap={1}>
@@ -236,27 +226,13 @@ export function WorkspaceCard(props: { api: TuiPluginApi; id: string }) {
   </InfoCard>
 }
 
-/** Async-agent aggregate: running/done/err/total plus per-subagent elapsed + tokens + tokens/sec. */
+/** Async-agent aggregate: running/done/err/total. Per-subagent detail lives in SubagentCard. */
 export function AsyncIdentity(props: { api: TuiPluginApi; id: string; compact?: boolean }) {
   const theme = () => props.api.theme.current
-  const [now, setNow] = createSignal(Date.now())
-  createEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    onCleanup(() => clearInterval(timer))
-  })
   const data = createMemo(() => asyncIdentity(props.api, props.id))
   return <box backgroundColor={theme().backgroundElement} paddingLeft={1} paddingRight={1}>
     <text fg={theme().primary}><b>Subagents {data().total}</b></text>
     <text fg={theme().text}>● {data().running} run · ✓ {data().done} done · ✕ {data().error} err · Σ {data().total}</text>
-    <Show when={!props.compact}>
-      <For each={data().rows.slice(0, 4)}>{(row) => <box>
-        <text fg={row.status === "error" ? theme().error : row.status === "done" ? theme().success : theme().text} wrapMode="word">
-          {row.status === "done" ? "✓" : row.status === "error" ? "✕" : "●"} {row.label}
-        </text>
-        <text fg={theme().textMuted}>↳ {durationLabel(row.elapsedMs)}{row.tokens === undefined ? "" : ` · ${compact(row.tokens)} tok`}{row.tokensPerSecond === undefined ? "" : ` · ${row.tokensPerSecond.toFixed(1)} t/s`}</text>
-      </box>}</For>
-    </Show>
-    <Show when={!props.compact && data().total > 4}><text fg={theme().textMuted}>+{data().total - 4} subagent lainnya</text></Show>
   </box>
 }
 
@@ -303,7 +279,15 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
         <text fg={theme().textMuted}>{data().agent ?? "Sesi baru"} · {activity().status?.type === "busy" ? "Bekerja" : activity().status?.type === "retry" ? "Mencoba ulang" : "Siap"}</text>
       </box>
       <ObservedWait reason={waitingReason(props.api, props.id, activity())} session={props.id} />
-      <AsyncIdentity api={props.api} id={props.id} />
+      <box>
+        <AsyncIdentity api={props.api} id={props.id} />
+        <Show when={agents().length > 0}>
+          <For each={agents().slice(0, limit())}>{(row) =>
+            <SubagentCard api={props.api} agent={row.item} ended={row.ended} />
+          }</For>
+          <Show when={agents().length > limit()}><text fg={theme().textMuted}>+{agents().length - limit()} agent lainnya</text></Show>
+        </Show>
+      </box>
       <Show when={activity().attention > 0}>
         <box>
           <text fg={theme().warning}><b>Butuh jawaban · {activity().attention}</b></text>
@@ -326,15 +310,6 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
         }</For>
         <Show when={!props.api.state.mcp().length}><text fg={theme().textMuted}>Tidak ada server MCP.</text></Show>
       </InfoCard>
-      <Show when={agents().length > 0}>
-        <box>
-          <text fg={theme().primary}><b>Subagent · {agents().length}</b></text>
-          <For each={agents().slice(0, limit())}>{(row) =>
-            <SubagentCard api={props.api} agent={row.item} ended={row.ended} />
-          }</For>
-          <Show when={agents().length > limit()}><text fg={theme().textMuted}>+{agents().length - limit()} agent lainnya</text></Show>
-        </box>
-      </Show>
       <InfoCard api={props.api} name="result" title="Aktivitas & hasil" initialOpen summary={activity().current ? `${activityDetail(activity().current!).action} · ${activityDetail(activity().current!).status}` : activity().latest ? `${activityDetail(activity().latest!).action} · ${activityDetail(activity().latest!).status}` : "Belum ada aktivitas tool"}>
         <Show when={tools().length > 0}>
           <box>
@@ -350,12 +325,8 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
         </box>}</Show>
         <text fg={theme().textMuted} wrapMode="word">Hasil tes: lihat keluaran pengujian di percakapan; status tool bukan bukti tes lulus.</text>
       </InfoCard>
-      <InfoCard api={props.api} name="context" title="Laporan token provider" summary={data().used === undefined ? "Token belum dilaporkan" : `${compact(data().used ?? NaN)} token · laporan terakhir`}>
-        <text fg={theme().textMuted} wrapMode="char">Provider · {data().provider}</text>
-        <text fg={theme().textMuted}>Konteks aktif DCP · belum diukur</text>
-        <text fg={theme().textMuted} wrapMode="word">Laporan ini menjumlahkan input, output, reasoning, dan cache dari pesan model terakhir yang melaporkan penggunaan.</text>
-        <text fg={theme().textMuted} wrapMode="word">Periksa /dcp untuk statistik kompresi. Angka provider bukan ukuran pesan yang akan dikirim sesudah DCP.</text>
-        <text fg={theme().textMuted}>Biaya tercatat · ${data().cost.toFixed(4)}</text>
+      <InfoCard api={props.api} name="context" title="Laporan token provider" summary={data().used === undefined ? "Token belum dilaporkan" : `${compact(data().used ?? NaN)} token · ${data().percent === undefined ? "konteks —" : `${data().percent}% konteks`} · $${data().cost.toFixed(4)}`}>
+        <text fg={theme().textMuted} wrapMode="char">{data().provider} · {data().used === undefined ? "— token" : `${compact(data().used ?? NaN)} token`} · {data().percent === undefined ? "konteks belum diukur" : `${data().percent}% konteks`} · ${data().cost.toFixed(4)}</text>
       </InfoCard>
       <InfoCard api={props.api} name="progress" title="Progres tugas" initialOpen summary={`${activity().completed}/${activity().total} selesai · ${activity().todos.length} tersisa`}>
         <Show when={activity().total > 0} fallback={<text fg={theme().textMuted}>Belum ada daftar tugas di sesi ini.</text>}>
@@ -449,9 +420,6 @@ const plugin: TuiPluginModule = {
         },
         sidebar_content(_ctx, props) {
           return <SidebarPresence visible={setSidebarVisible}><Overview api={api} id={props.session_id} /></SidebarPresence>
-        },
-        sidebar_footer(_ctx, props) {
-          return <AsyncIdentity api={api} id={props.session_id} compact />
         },
         home_footer() {
           return <text fg={api.theme.current.textMuted}>OPENCODE ASYNC AGENT · v{api.app.version}</text>
