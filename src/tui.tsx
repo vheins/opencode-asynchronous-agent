@@ -48,6 +48,39 @@ function basename(path: string) {
   return parts[parts.length - 1] ?? path
 }
 
+/** True for A/E/I/O/U, so abbreviation picks consonants before vowels. */
+function isVowel(char: string) {
+  return "AEIOU".includes(char)
+}
+
+/**
+ * Picks a middle letter from a segment: the first non-edge consonant that
+ * differs from `avoid`, else any non-edge consonant, else the segment's 2nd char.
+ */
+function middleLetter(segment: string, avoid: string) {
+  const inner = segment.slice(1, -1).split("")
+  const consonants = inner.filter((char) => !isVowel(char))
+  return consonants.find((char) => char !== avoid) ?? consonants[0] ?? inner[0] ?? segment[0] ?? ""
+}
+
+/**
+ * Abbreviates an agent name into a short uppercase code built from its start,
+ * middle and end (e.g. code-reviewer -> CVR, orchestrator -> ORC) so the
+ * creature label never truncates inside the narrow grid cell. Pure and
+ * deterministic; only the rendered label changes, keying stays on the full name.
+ */
+export function abbreviateAgentName(name: string): string {
+  const segments = name.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)
+  const letters = segments.join("")
+  if (!letters) return "?"
+  if (letters.length <= 3) return letters
+  if (segments.length === 1) return letters.slice(0, 3)
+  const first = segments[0][0]
+  const middle = middleLetter(segments[segments.length - 1], first)
+  const end = letters[letters.length - 1]
+  return `${first}${middle}${end}`.slice(0, 4)
+}
+
 /** "{connected}/{total} MCP | {active}/{total} plugin" summary. */
 function mcpPluginLabel(api: TuiPluginApi) {
   const mcp = api.state.mcp()
@@ -487,9 +520,10 @@ export function Creature(props: { api: TuiPluginApi; name: string; count: number
   const peak = createMemo(() => messagePeak(props.growthKey, props.count))
   const stage = createMemo(() => growthStage(props.growthKey, peak()))
   const frame = () => stage().frames[props.working ? creatureFrame() % 2 : 0]
+  const label = createMemo(() => abbreviateAgentName(props.name))
   return <box flexDirection="column" width={creatureCellWidth}>
     <For each={frame()}>{(line) => <text fg={props.working ? theme().accent : theme().textMuted} wrapMode="none">{line}</text>}</For>
-    <text fg={props.working ? theme().accent : theme().textMuted} wrapMode="none">{props.name}</text>
+    <text fg={props.working ? theme().accent : theme().textMuted} wrapMode="none">{label()}</text>
   </box>
 }
 

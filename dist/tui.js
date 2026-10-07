@@ -241,6 +241,28 @@ function basename(path) {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }
+function isVowel(char) {
+  return "AEIOU".includes(char);
+}
+function middleLetter(segment, avoid) {
+  const inner = segment.slice(1, -1).split("");
+  const consonants = inner.filter((char) => !isVowel(char));
+  return consonants.find((char) => char !== avoid) ?? consonants[0] ?? inner[0] ?? segment[0] ?? "";
+}
+function abbreviateAgentName(name) {
+  const segments = name.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  const letters = segments.join("");
+  if (!letters)
+    return "?";
+  if (letters.length <= 3)
+    return letters;
+  if (segments.length === 1)
+    return letters.slice(0, 3);
+  const first = segments[0][0];
+  const middle = middleLetter(segments[segments.length - 1], first);
+  const end = letters[letters.length - 1];
+  return `${first}${middle}${end}`.slice(0, 4);
+}
 function mcpPluginLabel(api) {
   const mcp = api.state.mcp();
   const plugins = api.plugins.list().filter((item) => item.source !== "internal");
@@ -822,6 +844,7 @@ function Creature(props) {
   const peak = createMemo(() => messagePeak(props.growthKey, props.count));
   const stage = createMemo(() => growthStage(props.growthKey, peak()));
   const frame = () => stage().frames[props.working ? creatureFrame() % 2 : 0];
+  const label = createMemo(() => abbreviateAgentName(props.name));
   return (() => {
     var _el$33 = _$createElement("box"), _el$34 = _$createElement("text");
     _$insertNode(_el$33, _el$34);
@@ -840,7 +863,7 @@ function Creature(props) {
       })()
     }), _el$34);
     _$setProp(_el$34, "wrapMode", "none");
-    _$insert(_el$34, () => props.name);
+    _$insert(_el$34, label);
     _$effect((_$p) => _$setProp(_el$34, "fg", props.working ? theme().accent : theme().textMuted, _$p));
     return _el$33;
   })();
@@ -1560,6 +1583,7 @@ export {
   SidebarPresence,
   SubagentCard,
   WorkspaceCard,
+  abbreviateAgentName,
   tui_default as default,
   retainActivity,
   waitingReason
