@@ -42,19 +42,17 @@ function compact(value: number) {
   return Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value)
 }
 
-/** Keeps the trailing segments of a path within a character budget, ellipsizing the front. */
-function truncatePath(path: string, max: number) {
-  if (max <= 1) return "…"
-  if (path.length <= max) return path
-  const budget = max - 1
+/** Last path segment only, so file displays never show the full path. */
+function basename(path: string) {
   const parts = path.split("/").filter(Boolean)
-  let tail = ""
-  for (let index = parts.length - 1; index >= 0; index--) {
-    const next = `/${parts[index]}${tail}`
-    if (next.length > budget) break
-    tail = next
-  }
-  return tail ? `…${tail}` : `…${path.slice(-budget)}`
+  return parts[parts.length - 1] ?? path
+}
+
+/** "{connected}/{total} MCP | {active}/{total} plugin" summary. */
+function mcpPluginLabel(api: TuiPluginApi) {
+  const mcp = api.state.mcp()
+  const plugins = api.plugins.list().filter((item) => item.source !== "internal")
+  return `${mcp.filter((item) => item.status === "connected").length}/${mcp.length} MCP | ${plugins.filter((item) => item.active).length}/${plugins.length} plugin`
 }
 
 type StatusSegment = { text: string; tone: "primary" | "muted" | "accent"; priority: number }
@@ -285,7 +283,7 @@ export function WorkspaceCard(props: { api: TuiPluginApi; id: string }) {
       <For each={scan().repos}>{(repo) => <box>
         <text fg={theme().primary} wrapMode="char"><b>{repo.path}</b> · {repo.branch}</text>
         <Show when={repo.error}><text fg={theme().warning}>{repo.error}</text></Show>
-        <For each={repo.files}>{(file) => <text fg={theme().text} wrapMode="char">{file.status} {file.path}</text>}</For>
+        <For each={repo.files}>{(file) => <text fg={theme().text} wrapMode="char">{file.status} {basename(file.path)}</text>}</For>
       </box>}</For>
       <For each={scan().errors}>{(message) => <text fg={theme().warning}>{message}</text>}</For>
       <Show when={scan().limited}><text fg={theme().warning}>Cakupan dibatasi 4 tingkat / 300 folder.</text></Show>
@@ -385,27 +383,25 @@ export function SidebarPresence(props: { visible: (value: boolean) => void; chil
 export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVisible: boolean }) {
   const size = useTerminalDimensions()
   const activity = createMemo(() => sidebarActivity(props.api, props.id))
-  const data = createMemo(() => sessionMetrics(props.api, props.id))
   const identity = createMemo(() => asyncIdentity(props.api, props.id))
   const theme = () => props.api.theme.current
-  const state = () => activity().attention > 0 ? `${activity().attention} menunggu jawaban` : activity().status?.type === "busy" ? "Bekerja" : activity().status?.type === "retry" ? "Mencoba ulang" : "Siap"
-  // One physical line only: the dock is capped at the terminal width so the
-  // app_bottom surface can never spill past two lines (dock + StatusBar).
+  // Single physical line: the dock absorbs the old StatusBar content (MCP/plugin)
+  // so app_bottom renders exactly one line at any width.
   const width = () => Math.max(1, (size().width || 80) - 2)
   const segments = (): StatusSegment[] => {
     const list: StatusSegment[] = [
-      { text: `ASYNC · ${data().agent ?? "Sesi"}`, tone: "primary", priority: 0 },
-      { text: ` | ● ${identity().running} run · ✓ ${identity().done} done · ✕ ${identity().error} err · Σ ${identity().total}`, tone: "muted", priority: 1 },
-      { text: ` | ${state()} | ${data().model}`, tone: "muted", priority: 2 },
+      { text: "ASYNC", tone: "primary", priority: 0 },
+      { text: ` | ● ${identity().running} run · ✓ ${identity().done} done · ✕ ${identity().error} err · Σ ${identity().total}`, tone: "muted", priority: 0 },
+      { text: ` | ${mcpPluginLabel(props.api)}`, tone: "muted", priority: 1 },
     ]
-    if (data().used !== undefined) list.push({ text: ` · ${compact(data().used ?? NaN)} token`, tone: "muted", priority: 3 })
     if (activity().latest) {
       const detail = activityDetail(activity().latest!)
-      list.push({ text: ` | ${detail.status} · ${detail.action}`, tone: "muted", priority: 4 })
+      list.push({ text: ` | ${detail.status} · ${detail.action}`, tone: "muted", priority: 2 })
       const target = detail.target ?? ""
-      if (target) list.push({ text: ` · ${truncatePath(target, Math.max(4, Math.floor(width() / 2)))}`, tone: "muted", priority: 5 })
+      if (target) list.push({ text: ` · ${basename(target)}`, tone: "muted", priority: 3 })
     }
-    list.push({ text: " | /studio-panel · detail", tone: "accent", priority: 6 })
+    list.push({ text: " | /studio-panel · detail", tone: "accent", priority: 4 })
+    list.push({ text: ` | ${props.api.state.vcs?.branch ?? "lokal"}`, tone: "muted", priority: 5 })
     return fitStatus(list, width())
   }
   const open = () => props.api.ui.dialog.replace(() => <props.api.ui.Dialog onClose={() => props.api.ui.dialog.clear()}>
@@ -436,13 +432,11 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
 function StatusBar(props: { api: TuiPluginApi }) {
   const size = useTerminalDimensions()
   const theme = () => props.api.theme.current
-  const mcp = () => props.api.state.mcp()
-  const plugins = () => props.api.plugins.list().filter((item) => item.source !== "internal")
   return (
     <box flexDirection="row" justifyContent="space-between" backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} width="100%" height={1} flexShrink={0}>
       <text fg={theme().primary}><b>ASYNC</b></text>
       <Show when={size().width >= 65}>
-        <text fg={theme().textMuted}>{mcp().filter((item) => item.status === "connected").length}/{mcp().length} MCP | {plugins().filter((item) => item.active).length}/{plugins().length} plugin</text>
+        <text fg={theme().textMuted}>{mcpPluginLabel(props.api)}</text>
       </Show>
       <text fg={theme().textMuted}>{props.api.state.vcs?.branch ?? "lokal"}</text>
     </box>
@@ -475,9 +469,12 @@ const plugin: TuiPluginModule = {
           return <text fg={api.theme.current.textMuted}>OPENCODE ASYNC AGENT · v{api.app.version}</text>
         },
         app_bottom() {
+          // Exactly one physical line: the dock (session + collapsed sidebar)
+          // replaces the fallback StatusBar; they never co-render.
           return <box flexShrink={0}>
-            <Show when={sessionID()}>{(id) => <ResponsiveDock api={api} id={id()} sidebarVisible={sidebarVisible()} />}</Show>
-            <StatusBar api={api} />
+            <Show when={sessionID() && !sidebarVisible()} fallback={<StatusBar api={api} />}>
+              <ResponsiveDock api={api} id={sessionID()!} sidebarVisible={sidebarVisible()} />
+            </Show>
           </box>
         },
       },
