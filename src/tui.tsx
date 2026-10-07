@@ -130,6 +130,12 @@ function subagentToasts(api: TuiPluginApi) {
   api.lifecycle.onDispose(() => { off(); previous.clear() })
 }
 
+/** Whether the sidebar renders the "Progres tugas" card. Off unless explicitly enabled. */
+function taskProgressVisible() {
+  const raw = String(process.env.OPENCODE_SUBAGENT_TASK_PROGRESS ?? "").trim().toLowerCase()
+  return !(raw === "" || raw === "0" || raw === "false" || raw === "off" || raw === "no")
+}
+
 export function InfoCard(props: { api: TuiPluginApi; name: string; title: string; summary: string; children: JSX.Element; initialOpen?: boolean; onOpen?: (open: boolean) => void; onActivate?: () => void }) {
   const [open, setOpen] = createSignal(props.api.kv.get<boolean>(`studio.card.${props.name}`, props.initialOpen ?? false))
   const [hovered, setHovered] = createSignal(false)
@@ -293,22 +299,7 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
   const theme = () => props.api.theme.current
   const data = createMemo(() => sessionMetrics(props.api, props.id))
   const activity = createMemo(() => sidebarActivity(props.api, props.id))
-  const calls = createMemo(() => new Map(props.api.state.session.messages(props.id).flatMap((message) => props.api.state.part(message.id).filter((part) => part.type === "tool")).map((part) => [part.callID, part])))
-  const detail = (tool: Parameters<typeof activityDetail>[0]) => activityDetail(calls().get(tool.callID) ?? tool)
   const agents = retainActivity(() => activity().agents, (agent) => agent.id, () => props.id)
-  const tools = retainActivity(() => activity().tools, (tool) => tool.callID, () => props.id)
-  // The single tool whose action/status the header summary already shows. The
-  // body must not repeat it, so it is filtered out of the detail list and only
-  // its unique target/result (never the action·status) is rendered below.
-  const headline = createMemo(() => activity().current ?? activity().latest)
-  const headlineDetail = createMemo(() => {
-    const item = headline()
-    if (!item) return undefined
-    if (item.tool === "task" || item.tool === "subagent") return undefined
-    if (activity().mcp.some((server) => server.calls.some((call) => call.callID === item.callID))) return undefined
-    return item
-  })
-  const visibleTools = createMemo(() => tools().filter((row) => row.item.callID !== headline()?.callID))
   const size = useTerminalDimensions()
   const limit = () => size().height < 35 ? 2 : 4
   return (
@@ -333,32 +324,19 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
           <text fg={theme().textMuted}>Periksa permintaan di percakapan.</text>
         </box>
       </Show>
-      <InfoCard api={props.api} name="result" title="Aktivitas & hasil" initialOpen summary={headline() ? `${activityDetail(headline()!).action} · ${activityDetail(headline()!).status}` : "Belum ada aktivitas tool"}>
-        <Show when={visibleTools().length > 0}>
-          <box>
-            <For each={visibleTools().slice(0, limit())}>{(row) =>
-              <box><text fg={theme().text} wrapMode="word">{detail(row.item).action} · {detail(row.item).status}{detail(row.item).target ? ` · ${detail(row.item).target}` : ""}</text><Show when={detail(row.item).result}><text fg={theme().textMuted} wrapMode="word">{detail(row.item).result}</text></Show></box>
-            }</For>
-            <Show when={visibleTools().length > limit()}><text fg={theme().textMuted}>+{visibleTools().length - limit()} tool lainnya</text></Show>
-          </box>
-        </Show>
-        <Show when={headlineDetail()}>{(item) => <box>
-          <Show when={detail(item()).target}><text fg={theme().text} wrapMode="word">{detail(item()).target}</text></Show>
-          <text fg={theme().textMuted} wrapMode="word">{detail(item()).result || "Masih diproses; belum ada hasil akhir."}</text>
-        </box>}</Show>
-        <text fg={theme().textMuted} wrapMode="word">Hasil tes: lihat keluaran pengujian di percakapan; status tool bukan bukti tes lulus.</text>
-      </InfoCard>
       <InfoCard api={props.api} name="context" title="Laporan token provider" summary={data().used === undefined ? "Token belum dilaporkan" : `${compact(data().used ?? NaN)} token · ${data().percent === undefined ? "konteks —" : `${data().percent}% konteks`} · $${data().cost.toFixed(4)}`}>
         <text fg={theme().textMuted} wrapMode="char">Provider · {data().provider}</text>
       </InfoCard>
-      <InfoCard api={props.api} name="progress" title="Progres tugas" initialOpen summary={activity().total === 0 ? "Belum ada daftar tugas" : `${activity().completed}/${activity().total} selesai · ${activity().todos.length} tersisa`}>
-        <Show when={activity().total > 0}>
-          <text fg={theme().textMuted}>{activity().todos.filter((todo) => todo.status === "in_progress").length} berjalan · {activity().todos.filter((todo) => todo.status === "pending").length} antre</text>
-          <For each={[...props.api.state.session.todo(props.id)].sort((a, b) => ({ in_progress: 0, pending: 1, completed: 2 }[a.status] ?? 3) - ({ in_progress: 0, pending: 1, completed: 2 }[b.status] ?? 3))}>{(todo) =>
-            <box marginTop={1}><text fg={todo.status === "in_progress" ? theme().primary : theme().textMuted}>{todo.status === "completed" ? "✓ Selesai" : todo.status === "in_progress" ? "› Sedang dikerjakan" : "· Menunggu"}</text><text fg={todo.status === "completed" ? theme().textMuted : theme().text} wrapMode="word">{todo.content}</text></box>
-          }</For>
-        </Show>
-      </InfoCard>
+      <Show when={taskProgressVisible()}>
+        <InfoCard api={props.api} name="progress" title="Progres tugas" initialOpen summary={activity().total === 0 ? "Belum ada daftar tugas" : `${activity().completed}/${activity().total} selesai · ${activity().todos.length} tersisa`}>
+          <Show when={activity().total > 0}>
+            <text fg={theme().textMuted}>{activity().todos.filter((todo) => todo.status === "in_progress").length} berjalan · {activity().todos.filter((todo) => todo.status === "pending").length} antre</text>
+            <For each={[...props.api.state.session.todo(props.id)].sort((a, b) => ({ in_progress: 0, pending: 1, completed: 2 }[a.status] ?? 3) - ({ in_progress: 0, pending: 1, completed: 2 }[b.status] ?? 3))}>{(todo) =>
+              <box marginTop={1}><text fg={todo.status === "in_progress" ? theme().primary : theme().textMuted}>{todo.status === "completed" ? "✓ Selesai" : todo.status === "in_progress" ? "› Sedang dikerjakan" : "· Menunggu"}</text><text fg={todo.status === "completed" ? theme().textMuted : theme().text} wrapMode="word">{todo.content}</text></box>
+            }</For>
+          </Show>
+        </InfoCard>
+      </Show>
       <WorkspaceCard api={props.api} id={props.id} />
     </box>
   )

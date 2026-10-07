@@ -147,6 +147,7 @@ All configuration is optional and read from environment variables at setup time.
 | `OPENCODE_AUTO_BG_EXCEPT` | *(none)* | Comma-separated denylist of **parent** agent ids. These parents never auto-background their subagents. |
 | `OPENCODE_AUTO_BG_DEBUG` | *(off)* | Set to `1` to log each rewrite to stderr. |
 | `OPENCODE_SUBAGENT_NOTIFY` | *(enabled)* | TUI monitor only. Set to `0`, `false`, `off`, or `no` to disable the toast shown when a background subagent finishes (`done`/`error`). |
+| `OPENCODE_SUBAGENT_TASK_PROGRESS` | *(off)* | TUI monitor only. Set to a truthy value (`1`, `true`, `on`, …) to show the "Progres tugas" card. Hidden unless explicitly enabled. |
 
 > **OpenCode V1 needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`.** V1 gates
 > background subagents behind that flag (or the broader `OPENCODE_EXPERIMENTAL=true`).
