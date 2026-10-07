@@ -840,33 +840,32 @@ function CreatureCard(props) {
   createEffect(() => {
     let changed = false;
     for (const agent of activity().agents) {
-      const previous = seen.get(agent.key);
-      if (!previous || previous.name !== agent.name || previous.session !== agent.id) {
-        seen.set(agent.key, {
-          name: agent.name,
+      const previous = seen.get(agent.name);
+      if (!previous || previous.session !== agent.id) {
+        seen.set(agent.name, {
           session: agent.id
         });
         changed = true;
       }
     }
     if (changed)
-      setAgents([...seen].map(([key, value]) => ({
-        key,
-        ...value
+      setAgents([...seen].map(([name, value]) => ({
+        name,
+        session: value.session
       })));
   });
   const cells = createMemo(() => {
-    const live = new Set(activity().agents.map((agent) => agent.key));
+    const live = new Set(activity().agents.map((agent) => agent.name));
     return [{
       key: `main:${props.id}`,
       name: main().agent ?? "Main",
       count: main().count,
       working: mainWorking()
     }, ...agents().map((agent) => ({
-      key: `agent:${agent.key}`,
+      key: `agent:${agent.name}`,
       name: agent.name,
       count: sessionMetrics(props.api, agent.session).count,
-      working: live.has(agent.key)
+      working: live.has(agent.name)
     }))];
   });
   const rows = createMemo(() => {

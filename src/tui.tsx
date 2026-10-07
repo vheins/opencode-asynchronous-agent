@@ -438,7 +438,7 @@ export function Creature(props: { api: TuiPluginApi; name: string; count: number
 }
 
 type CreatureCell = { key: string; name: string; count: number; working: boolean }
-type SeenAgent = { key: string; name: string; session: string }
+type SeenAgent = { name: string; session: string }
 
 /** Number of creature cells per grid row. */
 const creatureColumns = 3
@@ -448,28 +448,28 @@ export function CreatureCard(props: { api: TuiPluginApi; id: string }) {
   const activity = createMemo(() => sidebarActivity(props.api, props.id))
   const main = createMemo(() => sessionMetrics(props.api, props.id))
   const mainWorking = () => activity().status?.type === "busy" || activity().status?.type === "retry"
-  // Accumulate every subagent ever seen this session, keyed by the stable tool
-  // callID (`agent.key`) so the pre-resolution and resolved rows of one subagent
-  // collapse to a single creature; ended agents stay until the card unmounts
-  // (i.e. the main session ends), so no real creature is dropped on end.
-  const seen = new Map<string, { name: string; session: string }>()
+  // Accumulate every unique agent ever seen this session, keyed by the agent NAME
+  // (subagent_type) so re-invocations of the same agent collapse into one creature;
+  // a later invocation updates the stored session in place. Ended agents stay until
+  // the card unmounts (i.e. the main session ends), so no unique agent is dropped.
+  const seen = new Map<string, { session: string }>()
   const [agents, setAgents] = createSignal<SeenAgent[]>([])
   createEffect(() => {
     let changed = false
     for (const agent of activity().agents) {
-      const previous = seen.get(agent.key)
-      if (!previous || previous.name !== agent.name || previous.session !== agent.id) {
-        seen.set(agent.key, { name: agent.name, session: agent.id })
+      const previous = seen.get(agent.name)
+      if (!previous || previous.session !== agent.id) {
+        seen.set(agent.name, { session: agent.id })
         changed = true
       }
     }
-    if (changed) setAgents([...seen].map(([key, value]) => ({ key, ...value })))
+    if (changed) setAgents([...seen].map(([name, value]) => ({ name, session: value.session })))
   })
   const cells = createMemo<CreatureCell[]>(() => {
-    const live = new Set(activity().agents.map((agent) => agent.key))
+    const live = new Set(activity().agents.map((agent) => agent.name))
     return [
       { key: `main:${props.id}`, name: main().agent ?? "Main", count: main().count, working: mainWorking() },
-      ...agents().map((agent) => ({ key: `agent:${agent.key}`, name: agent.name, count: sessionMetrics(props.api, agent.session).count, working: live.has(agent.key) })),
+      ...agents().map((agent) => ({ key: `agent:${agent.name}`, name: agent.name, count: sessionMetrics(props.api, agent.session).count, working: live.has(agent.name) })),
     ]
   })
   const rows = createMemo(() => {
