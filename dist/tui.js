@@ -14,15 +14,15 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, 
 // src/model.ts
 function activityDetail(tool) {
   const input = tool.state.input;
-  const clean = (value) => typeof value === "string" ? value.split("").map((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159 ? " " : char).join("").replace(/(?:Bearer\s+\S+|(?:api[_-]?key|token|password|secret)\s*[:=]\s*\S+)/gi, "[disamarkan]").replace(/\s+/g, " ").trim().slice(0, 120) : "";
-  const labels = { read: "Membaca berkas", edit: "Mengubah berkas", write: "Menulis berkas", glob: "Mencari berkas", grep: "Menelusuri kode", search: "Mencari informasi", bash: "Menjalankan perintah", task: "Delegasi agent", subagent: "Delegasi agent" };
+  const clean = (value) => typeof value === "string" ? value.split("").map((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159 ? " " : char).join("").replace(/(?:Bearer\s+\S+|(?:api[_-]?key|token|password|secret)\s*[:=]\s*\S+)/gi, "[redacted]").replace(/\s+/g, " ").trim().slice(0, 120) : "";
+  const labels = { read: "Reading file", edit: "Editing file", write: "Writing file", glob: "Finding files", grep: "Searching code", search: "Searching information", bash: "Running command", task: "Delegating agent", subagent: "Delegating agent" };
   const action = labels[tool.tool] ?? clean(tool.tool);
   const target = clean(input.description) || clean(input.filePath ?? input.file_path ?? input.path) || clean(input.title);
-  const status = { pending: "Antre", running: "Berjalan", completed: "Selesai", error: "Gagal" }[tool.state.status];
+  const status = { pending: "Queued", running: "Running", completed: "Done", error: "Failed" }[tool.state.status];
   const background = tool.state.status === "completed" && tool.state.metadata.background === true;
-  const duration = tool.state.status === "completed" || tool.state.status === "error" ? ` \xB7 ${Math.max(0, (tool.state.time.end - tool.state.time.start) / 1000).toFixed(1)} dtk` : "";
-  const result = tool.state.status === "error" ? "Periksa detail kegagalan di percakapan." : background ? "Peluncuran selesai; status anak dipantau terpisah." : tool.state.status === "completed" ? `Tool selesai${duration}.` : "";
-  return { action, target, status: background ? "Diluncurkan" : status, result };
+  const duration = tool.state.status === "completed" || tool.state.status === "error" ? ` \xB7 ${Math.max(0, (tool.state.time.end - tool.state.time.start) / 1000).toFixed(1)}s` : "";
+  const result = tool.state.status === "error" ? "Check the failure details in the conversation." : background ? "Launched; child status is tracked separately." : tool.state.status === "completed" ? `Tool finished${duration}.` : "";
+  return { action, target, status: background ? "Launched" : status, result };
 }
 function sessionMetrics(api, id) {
   const messages = api.state.session.messages(id);
@@ -34,8 +34,8 @@ function sessionMetrics(api, id) {
   const used = tokens ? [tokens.input, tokens.output, tokens.reasoning, tokens.cache.read, tokens.cache.write].reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0) : undefined;
   const limit = api.state.provider.find((item) => item.id === provider)?.models[model ?? ""]?.limit.context;
   return {
-    model: model ?? "Menunggu respons",
-    provider: provider ?? "Belum ada penggunaan",
+    model: model ?? "Waiting for response",
+    provider: provider ?? "No usage yet",
     agent: latest?.role === "assistant" ? latest.agent : undefined,
     used,
     percent: used !== undefined && limit && limit > 0 ? Math.round(used / limit * 100) : undefined,
@@ -65,7 +65,7 @@ function sidebarActivity(api, id) {
     return [{
       id: child ?? tool.callID,
       name: typeof tool.state.input.subagent_type === "string" ? tool.state.input.subagent_type : "subagent",
-      label: waiting ? "Menunggu jawaban" : status?.type === "retry" ? "Mencoba ulang" : "Bekerja",
+      label: waiting ? "Waiting for answer" : status?.type === "retry" ? "Retrying" : "Working",
       target: activityDetail(tool).target
     }];
   }).filter((agent, index, list) => list.findIndex((item) => item.id === agent.id) === index);
@@ -104,8 +104,8 @@ function subagentDetails(session, messages, todos, limit) {
   const used = usage ? [usage.input, usage.output, usage.reasoning, usage.cache.read, usage.cache.write].reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0) : 0;
   const { providerID, modelID } = subagentModel(session, infos);
   return {
-    title: session?.title ?? "Judul belum dilaporkan",
-    model: providerID && modelID ? `${providerID} / ${modelID}` : "Model belum dilaporkan",
+    title: session?.title ?? "Title not reported yet",
+    model: providerID && modelID ? `${providerID} / ${modelID}` : "Model not reported yet",
     started: session?.time.created,
     activity: latest ? activityDetail(latest) : undefined,
     current: Boolean(current),
@@ -126,7 +126,7 @@ async function fetchSubagent(api, sessionID, signal) {
     api.client.session.todo(params, { signal })
   ]);
   if (session.error || messages.error || todos.error)
-    throw new Error("Detail subagent belum tersedia dari host");
+    throw new Error("Subagent details not available from host");
   const list = messages.data ?? [];
   const { providerID, modelID } = subagentModel(session.data, list.map((entry) => entry.info));
   const limit = providerID && modelID ? api.state.provider.find((item) => item.id === providerID)?.models[modelID]?.limit.context : undefined;
@@ -134,11 +134,11 @@ async function fetchSubagent(api, sessionID, signal) {
 }
 function elapsedLabel(start, now) {
   if (start === undefined || !Number.isFinite(start) || start <= 0)
-    return "Durasi belum tersedia";
+    return "Duration not available yet";
   const seconds = Math.max(0, Math.floor((now - start) / 1000));
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor(seconds / 60) % 60;
-  return hours ? `${hours}j ${minutes}m ${seconds % 60}d` : `${minutes}m ${seconds % 60}d`;
+  return hours ? `${hours}h ${minutes}m ${seconds % 60}s` : `${minutes}m ${seconds % 60}s`;
 }
 
 // src/workspace.ts
@@ -159,7 +159,7 @@ async function inspectWorkspace(root, signal) {
     try {
       entries = await readdir(current.path, { withFileTypes: true });
     } catch {
-      errors.push(`Tidak dapat membaca ${relative(root, current.path) || "."}`);
+      errors.push(`Unable to read ${relative(root, current.path) || "."}`);
       continue;
     }
     if (entries.some((entry) => entry.name === ".git")) {
@@ -182,7 +182,7 @@ async function inspectWorkspace(root, signal) {
           if (/[RC]/.test(record.slice(0, 2)))
             i++;
         }
-        repos.push({ path: relative(root, current.path) || ".", branch, files, ...exit !== 0 ? { error: "Git tidak tersedia, gagal, atau melewati batas waktu" } : {} });
+        repos.push({ path: relative(root, current.path) || ".", branch, files, ...exit !== 0 ? { error: "Git unavailable, failed, or timed out" } : {} });
       } finally {
         clearTimeout(timeout);
         signal?.removeEventListener("abort", abort);
@@ -326,7 +326,7 @@ function subagentToasts(api) {
     try {
       api.ui.toast({
         variant: ok ? "success" : "error",
-        title: ok ? "Subagent selesai" : "Subagent gagal",
+        title: ok ? "Subagent finished" : "Subagent failed",
         message: label,
         duration: ok ? 4000 : 6000
       });
@@ -353,7 +353,7 @@ function InfoCard(props) {
     props.api.kv.set(`studio.card.${props.name}`, next);
   };
   const unregister = props.api.command?.register(() => [{
-    title: `Studio: ${open() ? "tutup" : "buka"} ${props.title}`,
+    title: `Studio: ${open() ? "close" : "open"} ${props.title}`,
     value: `studio.card.${props.name}`,
     category: "Studio",
     slash: {
@@ -456,7 +456,7 @@ function SubagentCard(props) {
         }
       } catch {
         if (!controller.signal.aborted)
-          setError("Detail belum tersedia; mencoba lagi.");
+          setError("Details not available yet; retrying.");
       } finally {
         pending = false;
       }
@@ -477,7 +477,7 @@ function SubagentCard(props) {
     const detail = data();
     const seconds = elapsed() / 1000;
     const stat = [elapsedLabel(started(), props.ended ?? now()), detail ? `${detail.toolCount} Tools` : "\u2026 Tools", detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined, detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined].filter((part) => Boolean(part)).join(" \xB7 ");
-    return `${detail?.title ?? "Memuat judul\u2026"}
+    return `${detail?.title ?? "Loading title\u2026"}
 ${stat}`;
   };
   return _$createComponent(InfoCard, {
@@ -488,7 +488,7 @@ ${stat}`;
       return `agent-${props.agent.id}`;
     },
     get title() {
-      return `${props.agent.name} \xB7 ${props.ended ? "Baru berakhir" : props.agent.label}`;
+      return `${props.agent.name} \xB7 ${props.ended ? "Just ended" : props.agent.label}`;
     },
     onActivate: () => navigateToSession(props.api, props.agent.id),
     get summary() {
@@ -528,7 +528,7 @@ ${stat}`;
           _$setProp(_el$11, "wrapMode", "word");
           _$insert(_el$11, (() => {
             var _c$ = _$memo(() => !!detail().activity);
-            return () => _c$() ? `${detail().current ? "Sekarang" : "Terakhir"} \xB7 ${detail().activity.action} \xB7 ${detail().activity.status}` : "Aktivitas tool belum dilaporkan.";
+            return () => _c$() ? `${detail().current ? "Now" : "Last"} \xB7 ${detail().activity.action} \xB7 ${detail().activity.status}` : "Tool activity not reported yet.";
           })());
           _$insert(_el$10, _$createComponent(Show, {
             get when() {
@@ -544,7 +544,7 @@ ${stat}`;
           }), _el$13);
           _$insert(_el$13, (() => {
             var _c$2 = _$memo(() => !!detail().todos.length);
-            return () => _c$2() ? `${detail().completed}/${detail().todos.length} tugas selesai` : "Progres tugas belum dilaporkan.";
+            return () => _c$2() ? `${detail().completed}/${detail().todos.length} tasks done` : "Task progress not reported yet.";
           })());
           _$insert(_el$10, _$createComponent(For, {
             get each() {
@@ -603,7 +603,7 @@ function WorkspaceCard(props) {
         }
       } catch {
         if (!controller.signal.aborted)
-          setError("Pemindaian Git gagal. Periksa akses folder dan instalasi Git.");
+          setError("Git scan failed. Check folder access and Git installation.");
       } finally {
         pending = false;
       }
@@ -620,10 +620,10 @@ function WorkspaceCard(props) {
       return props.api;
     },
     name: "files",
-    title: "Ruang kerja & berkas",
+    title: "Workspace & files",
     onOpen: setOpen,
     get summary() {
-      return error() || (data() ? `${data().repos.length} repo Git \xB7 ${data().repos.reduce((n, repo) => n + repo.files.length, 0)} entri berubah` : open() ? "Memindai repositori\u2026" : "Buka untuk memindai repo root dan subfolder");
+      return error() || (data() ? `${data().repos.length} Git repos \xB7 ${data().repos.reduce((n, repo) => n + repo.files.length, 0)} changed entries` : open() ? "Scanning repositories\u2026" : "Open to scan the repo root and subfolders");
     },
     get children() {
       return [(() => {
@@ -634,7 +634,7 @@ function WorkspaceCard(props) {
         return _el$16;
       })(), (() => {
         var _el$17 = _$createElement("text");
-        _$insertNode(_el$17, _$createTextNode(`Git lokal, bukan hanya perubahan sesi \xB7 refresh 15 dtk`));
+        _$insertNode(_el$17, _$createTextNode(`Local Git, not just session changes \xB7 refresh 15s`));
         _$effect((_$p) => _$setProp(_el$17, "fg", theme().textMuted, _$p));
         return _el$17;
       })(), _$createComponent(Show, {
@@ -702,7 +702,7 @@ function WorkspaceCard(props) {
             },
             get children() {
               var _el$22 = _$createElement("text");
-              _$insertNode(_el$22, _$createTextNode(`Cakupan dibatasi 4 tingkat / 300 folder.`));
+              _$insertNode(_el$22, _$createTextNode(`Scope limited to 4 levels / 300 folders.`));
               _$effect((_$p) => _$setProp(_el$22, "fg", theme().warning, _$p));
               return _el$22;
             }
@@ -710,7 +710,7 @@ function WorkspaceCard(props) {
           return _el$21;
         })()
       }), (() => {
-        var _el$19 = _$createElement("text"), _el$20 = _$createTextNode(` berkas tercatat terpisah oleh sesi OpenCode.`);
+        var _el$19 = _$createElement("text"), _el$20 = _$createTextNode(` files tracked separately by the OpenCode session.`);
         _$insertNode(_el$19, _el$20);
         _$insert(_el$19, () => props.api.state.session.diff(props.id).length, _el$20);
         _$effect((_$p) => _$setProp(_el$19, "fg", theme().textMuted, _$p));
@@ -755,17 +755,17 @@ function AsyncIdentity(props) {
 }
 function waitingReason(api, id, activity) {
   if (api.state.session.permission(id).length)
-    return "Menunggu izin kamu";
+    return "Waiting for your permission";
   if (api.state.session.question(id).length)
-    return "Menunggu pilihan / jawaban kamu";
+    return "Waiting for your choice / answer";
   if (activity.status?.type === "retry")
-    return "Menunggu percobaan ulang model";
+    return "Waiting for model retry";
   if (activity.current?.tool === "task" || activity.current?.tool === "subagent" || !activity.current && activity.agents.length)
-    return "Menunggu hasil subagent";
+    return "Waiting for subagent results";
   if (activity.current)
-    return `${activity.current.state.status === "pending" ? "Mengantre" : "Menunggu hasil"} \xB7 ${activityDetail(activity.current).action}`;
+    return `${activity.current.state.status === "pending" ? "Queued" : "Waiting for result"} \xB7 ${activityDetail(activity.current).action}`;
   if (activity.status?.type === "busy")
-    return "Menunggu respons model";
+    return "Waiting for model response";
   return "";
 }
 function ObservedWait(props) {
@@ -785,7 +785,7 @@ function ObservedWait(props) {
       return props.reason;
     },
     get children() {
-      var _el$41 = _$createElement("text"), _el$42 = _$createTextNode(` \xB7 `), _el$43 = _$createTextNode(` dtk teramati`);
+      var _el$41 = _$createElement("text"), _el$42 = _$createTextNode(` \xB7 `), _el$43 = _$createTextNode(`s observed`);
       _$insertNode(_el$41, _el$42);
       _$insertNode(_el$41, _el$43);
       _$setProp(_el$41, "wrapMode", "word");
@@ -814,10 +814,10 @@ function Overview(props) {
     _$setProp(_el$46, "wrapMode", "char");
     _$insert(_el$47, () => data().model);
     _$insertNode(_el$48, _el$49);
-    _$insert(_el$48, () => data().agent ?? "Sesi baru", _el$49);
+    _$insert(_el$48, () => data().agent ?? "New session", _el$49);
     _$insert(_el$48, (() => {
       var _c$4 = _$memo(() => activity().status?.type === "busy");
-      return () => _c$4() ? "Bekerja" : activity().status?.type === "retry" ? "Mencoba ulang" : "Siap";
+      return () => _c$4() ? "Working" : activity().status?.type === "retry" ? "Retrying" : "Ready";
     })(), null);
     _$insert(_el$44, _$createComponent(ObservedWait, {
       get reason() {
@@ -860,7 +860,7 @@ function Overview(props) {
             return agents().length > limit();
           },
           get children() {
-            var _el$51 = _$createElement("text"), _el$52 = _$createTextNode(`+`), _el$53 = _$createTextNode(` agent lainnya`);
+            var _el$51 = _$createElement("text"), _el$52 = _$createTextNode(`+`), _el$53 = _$createTextNode(` more agents`);
             _$insertNode(_el$51, _el$52);
             _$insertNode(_el$51, _el$53);
             _$insert(_el$51, () => agents().length - limit(), _el$53);
@@ -875,13 +875,13 @@ function Overview(props) {
         return activity().attention > 0;
       },
       get children() {
-        var _el$54 = _$createElement("box"), _el$55 = _$createElement("text"), _el$56 = _$createElement("b"), _el$57 = _$createTextNode(`Butuh jawaban \xB7 `), _el$58 = _$createElement("text");
+        var _el$54 = _$createElement("box"), _el$55 = _$createElement("text"), _el$56 = _$createElement("b"), _el$57 = _$createTextNode(`Needs answer \xB7 `), _el$58 = _$createElement("text");
         _$insertNode(_el$54, _el$55);
         _$insertNode(_el$54, _el$58);
         _$insertNode(_el$55, _el$56);
         _$insertNode(_el$56, _el$57);
         _$insert(_el$56, () => activity().attention, null);
-        _$insertNode(_el$58, _$createTextNode(`Periksa permintaan di percakapan.`));
+        _$insertNode(_el$58, _$createTextNode(`Check the request in the conversation.`));
         _$effect((_p$) => {
           var _v$10 = theme().warning, _v$11 = theme().textMuted;
           _v$10 !== _p$.e && (_p$.e = _$setProp(_el$55, "fg", _v$10, _p$.e));
@@ -899,9 +899,9 @@ function Overview(props) {
         return props.api;
       },
       name: "context",
-      title: "Laporan token provider",
+      title: "Provider token report",
       get summary() {
-        return _$memo(() => data().used === undefined)() ? "Token belum dilaporkan" : `${compact(data().used ?? NaN)} token \xB7 ${data().percent === undefined ? "konteks \u2014" : `${data().percent}% konteks`} \xB7 $${data().cost.toFixed(4)}`;
+        return _$memo(() => data().used === undefined)() ? "Tokens not reported yet" : `${compact(data().used ?? NaN)} token \xB7 ${data().percent === undefined ? "context \u2014" : `${data().percent}% context`} \xB7 $${data().cost.toFixed(4)}`;
       },
       get children() {
         var _el$60 = _$createElement("text"), _el$61 = _$createTextNode(`Provider \xB7 `);
@@ -922,10 +922,10 @@ function Overview(props) {
             return props.api;
           },
           name: "progress",
-          title: "Progres tugas",
+          title: "Task progress",
           initialOpen: true,
           get summary() {
-            return _$memo(() => activity().total === 0)() ? "Belum ada daftar tugas" : `${activity().completed}/${activity().total} selesai \xB7 ${activity().todos.length} tersisa`;
+            return _$memo(() => activity().total === 0)() ? "No task list yet" : `${activity().completed}/${activity().total} done \xB7 ${activity().todos.length} remaining`;
           },
           get children() {
             return _$createComponent(Show, {
@@ -934,7 +934,7 @@ function Overview(props) {
               },
               get children() {
                 return [(() => {
-                  var _el$62 = _$createElement("text"), _el$63 = _$createTextNode(` berjalan \xB7 `), _el$64 = _$createTextNode(` antre`);
+                  var _el$62 = _$createElement("text"), _el$63 = _$createTextNode(` running \xB7 `), _el$64 = _$createTextNode(` queued`);
                   _$insertNode(_el$62, _el$63);
                   _$insertNode(_el$62, _el$64);
                   _$insert(_el$62, () => activity().todos.filter((todo) => todo.status === "in_progress").length, _el$63);
@@ -960,7 +960,7 @@ function Overview(props) {
                     _$setProp(_el$65, "marginTop", 1);
                     _$insert(_el$66, (() => {
                       var _c$5 = _$memo(() => todo.status === "completed");
-                      return () => _c$5() ? "\u2713 Selesai" : todo.status === "in_progress" ? "\u203A Sedang dikerjakan" : "\xB7 Menunggu";
+                      return () => _c$5() ? "\u2713 Done" : todo.status === "in_progress" ? "\u203A In progress" : "\xB7 Pending";
                     })());
                     _$setProp(_el$67, "wrapMode", "word");
                     _$insert(_el$67, () => todo.content);
@@ -1048,7 +1048,7 @@ function ResponsiveDock(props) {
       priority: 4
     });
     list.push({
-      text: ` | ${props.api.state.vcs?.branch ?? "lokal"}`,
+      text: ` | ${props.api.state.vcs?.branch ?? "local"}`,
       tone: "muted",
       priority: 5
     });
@@ -1057,13 +1057,13 @@ function ResponsiveDock(props) {
   const open = () => props.api.ui.dialog.replace(() => _$createComponent(props.api.ui.Dialog, {
     onClose: () => props.api.ui.dialog.clear(),
     get children() {
-      var _el$68 = _$createElement("box"), _el$69 = _$createElement("text"), _el$70 = _$createElement("b"), _el$72 = _$createTextNode(` \xB7 Esc tutup`), _el$73 = _$createElement("scrollbox");
+      var _el$68 = _$createElement("box"), _el$69 = _$createElement("text"), _el$70 = _$createElement("b"), _el$72 = _$createTextNode(` \xB7 Esc to close`), _el$73 = _$createElement("scrollbox");
       _$insertNode(_el$68, _el$69);
       _$insertNode(_el$68, _el$73);
       _$setProp(_el$68, "padding", 1);
       _$insertNode(_el$69, _el$70);
       _$insertNode(_el$69, _el$72);
-      _$insertNode(_el$70, _$createTextNode(`Studio \xB7 Detail sesi`));
+      _$insertNode(_el$70, _$createTextNode(`Studio \xB7 Session detail`));
       _$insert(_el$73, _$createComponent(Overview, {
         get api() {
           return props.api;
@@ -1086,7 +1086,7 @@ function ResponsiveDock(props) {
     }
   }));
   const unregister = props.api.command?.register(() => [{
-    title: "Studio: buka seluruh informasi sesi",
+    title: "Studio: open all session information",
     value: "studio.panel",
     category: "Studio",
     slash: {
@@ -1167,7 +1167,7 @@ function StatusBar(props) {
         return _el$82;
       }
     }), _el$83);
-    _$insert(_el$83, () => props.api.state.vcs?.branch ?? "lokal");
+    _$insert(_el$83, () => props.api.state.vcs?.branch ?? "local");
     _$effect((_p$) => {
       var _v$18 = theme().backgroundPanel, _v$19 = theme().primary, _v$20 = theme().textMuted;
       _v$18 !== _p$.e && (_p$.e = _$setProp(_el$78, "backgroundColor", _v$18, _p$.e));
@@ -1202,7 +1202,7 @@ var plugin = {
             _$setProp(_el$84, "gap", 1);
             _$setProp(_el$84, "paddingBottom", 1);
             _$insertNode(_el$85, _el$86);
-            _$insertNode(_el$86, _$createTextNode(`ASYNC AGENT / SESI`));
+            _$insertNode(_el$86, _$createTextNode(`ASYNC AGENT / SESSION`));
             _$insertNode(_el$88, _el$89);
             _$setProp(_el$88, "wrapMode", "word");
             _$insert(_el$89, () => props.title);

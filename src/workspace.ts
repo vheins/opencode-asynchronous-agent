@@ -5,7 +5,7 @@ const ignored = new Set(["node_modules", ".git", ".next", ".cache", "vendor", "d
 
 /**
  * Scans the workspace root (bounded depth) for Git repositories and their changed files.
- * Used by the sidebar "Ruang kerja & berkas" card; read-only, best-effort.
+ * Used by the sidebar "Workspace & files" card; read-only, best-effort.
  */
 export async function inspectWorkspace(root: string, signal?: AbortSignal) {
   const repos: { path: string; branch: string; files: { status: string; path: string }[]; error?: string }[] = []
@@ -19,7 +19,7 @@ export async function inspectWorkspace(root: string, signal?: AbortSignal) {
     visited++
     let entries
     try { entries = await readdir(current.path, { withFileTypes: true }) }
-    catch { errors.push(`Tidak dapat membaca ${relative(root, current.path) || "."}`); continue }
+    catch { errors.push(`Unable to read ${relative(root, current.path) || "."}`); continue }
     if (entries.some((entry) => entry.name === ".git")) {
       const child = Bun.spawn(["git", "-C", current.path, "status", "--porcelain=v1", "-z", "--branch", "--untracked-files=normal"], { stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } })
       const abort = () => { child.kill() }
@@ -36,7 +36,7 @@ export async function inspectWorkspace(root: string, signal?: AbortSignal) {
           files.push({ status: record.slice(0, 2), path: record.slice(3) })
           if (/[RC]/.test(record.slice(0, 2))) i++
         }
-        repos.push({ path: relative(root, current.path) || ".", branch, files, ...(exit !== 0 ? { error: "Git tidak tersedia, gagal, atau melewati batas waktu" } : {}) })
+        repos.push({ path: relative(root, current.path) || ".", branch, files, ...(exit !== 0 ? { error: "Git unavailable, failed, or timed out" } : {}) })
       } finally { clearTimeout(timeout); signal?.removeEventListener("abort", abort) }
     }
     for (const entry of entries) {

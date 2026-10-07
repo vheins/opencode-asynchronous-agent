@@ -4,19 +4,19 @@ import type { ToolPart } from "@opencode-ai/sdk/v2"
 export function activityDetail(tool: ToolPart) {
   const input = tool.state.input
   const clean = (value: unknown) => typeof value === "string"
-    ? value.split("").map((char) => char.charCodeAt(0) < 32 || (char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159) ? " " : char).join("").replace(/(?:Bearer\s+\S+|(?:api[_-]?key|token|password|secret)\s*[:=]\s*\S+)/gi, "[disamarkan]").replace(/\s+/g, " ").trim().slice(0, 120)
+    ? value.split("").map((char) => char.charCodeAt(0) < 32 || (char.charCodeAt(0) >= 127 && char.charCodeAt(0) <= 159) ? " " : char).join("").replace(/(?:Bearer\s+\S+|(?:api[_-]?key|token|password|secret)\s*[:=]\s*\S+)/gi, "[redacted]").replace(/\s+/g, " ").trim().slice(0, 120)
     : ""
-  const labels: Record<string, string> = { read: "Membaca berkas", edit: "Mengubah berkas", write: "Menulis berkas", glob: "Mencari berkas", grep: "Menelusuri kode", search: "Mencari informasi", bash: "Menjalankan perintah", task: "Delegasi agent", subagent: "Delegasi agent" }
+  const labels: Record<string, string> = { read: "Reading file", edit: "Editing file", write: "Writing file", glob: "Finding files", grep: "Searching code", search: "Searching information", bash: "Running command", task: "Delegating agent", subagent: "Delegating agent" }
   const action = labels[tool.tool] ?? clean(tool.tool)
   const target = clean(input.description) || clean(input.filePath ?? input.file_path ?? input.path) || clean(input.title)
-  const status = { pending: "Antre", running: "Berjalan", completed: "Selesai", error: "Gagal" }[tool.state.status]
+  const status = { pending: "Queued", running: "Running", completed: "Done", error: "Failed" }[tool.state.status]
   const background = tool.state.status === "completed" && tool.state.metadata.background === true
   const duration = tool.state.status === "completed" || tool.state.status === "error"
-    ? ` · ${Math.max(0, (tool.state.time.end - tool.state.time.start) / 1000).toFixed(1)} dtk` : ""
-  const result = tool.state.status === "error" ? "Periksa detail kegagalan di percakapan."
-    : background ? "Peluncuran selesai; status anak dipantau terpisah."
-    : tool.state.status === "completed" ? `Tool selesai${duration}.` : ""
-  return { action, target, status: background ? "Diluncurkan" : status, result }
+    ? ` · ${Math.max(0, (tool.state.time.end - tool.state.time.start) / 1000).toFixed(1)}s` : ""
+  const result = tool.state.status === "error" ? "Check the failure details in the conversation."
+    : background ? "Launched; child status is tracked separately."
+    : tool.state.status === "completed" ? `Tool finished${duration}.` : ""
+  return { action, target, status: background ? "Launched" : status, result }
 }
 
 export function sessionMetrics(api: TuiPluginApi, id: string) {
@@ -29,8 +29,8 @@ export function sessionMetrics(api: TuiPluginApi, id: string) {
   const used = tokens ? [tokens.input, tokens.output, tokens.reasoning, tokens.cache.read, tokens.cache.write].reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0) : undefined
   const limit = api.state.provider.find((item) => item.id === provider)?.models[model ?? ""]?.limit.context
   return {
-    model: model ?? "Menunggu respons",
-    provider: provider ?? "Belum ada penggunaan",
+    model: model ?? "Waiting for response",
+    provider: provider ?? "No usage yet",
     agent: latest?.role === "assistant" ? latest.agent : undefined,
     used,
     percent: used !== undefined && limit && limit > 0 ? Math.round(used / limit * 100) : undefined,
@@ -62,7 +62,7 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
     return [{
       id: child ?? tool.callID,
       name: typeof tool.state.input.subagent_type === "string" ? tool.state.input.subagent_type : "subagent",
-      label: waiting ? "Menunggu jawaban" : status?.type === "retry" ? "Mencoba ulang" : "Bekerja",
+      label: waiting ? "Waiting for answer" : status?.type === "retry" ? "Retrying" : "Working",
       target: activityDetail(tool).target,
     }]
   }).filter((agent, index, list) => list.findIndex((item) => item.id === agent.id) === index)

@@ -25,8 +25,8 @@ export function subagentDetails(session: Session | undefined, messages: { info: 
   const used = usage ? [usage.input, usage.output, usage.reasoning, usage.cache.read, usage.cache.write].reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0) : 0
   const { providerID, modelID } = subagentModel(session, infos)
   return {
-    title: session?.title ?? "Judul belum dilaporkan",
-    model: providerID && modelID ? `${providerID} / ${modelID}` : "Model belum dilaporkan",
+    title: session?.title ?? "Title not reported yet",
+    model: providerID && modelID ? `${providerID} / ${modelID}` : "Model not reported yet",
     started: session?.time.created,
     activity: latest ? activityDetail(latest) : undefined,
     current: Boolean(current),
@@ -47,7 +47,7 @@ export async function fetchSubagent(api: TuiPluginApi, sessionID: string, signal
     api.client.session.messages({ ...params, limit: 30 }, { signal }),
     api.client.session.todo(params, { signal }),
   ])
-  if (session.error || messages.error || todos.error) throw new Error("Detail subagent belum tersedia dari host")
+  if (session.error || messages.error || todos.error) throw new Error("Subagent details not available from host")
   const list = messages.data ?? []
   const { providerID, modelID } = subagentModel(session.data, list.map((entry) => entry.info))
   const limit = providerID && modelID ? api.state.provider.find((item) => item.id === providerID)?.models[modelID]?.limit.context : undefined
@@ -55,9 +55,9 @@ export async function fetchSubagent(api: TuiPluginApi, sessionID: string, signal
 }
 
 export function elapsedLabel(start: number | undefined, now: number) {
-  if (start === undefined || !Number.isFinite(start) || start <= 0) return "Durasi belum tersedia"
+  if (start === undefined || !Number.isFinite(start) || start <= 0) return "Duration not available yet"
   const seconds = Math.max(0, Math.floor((now - start) / 1000))
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor(seconds / 60) % 60
-  return hours ? `${hours}j ${minutes}m ${seconds % 60}d` : `${minutes}m ${seconds % 60}d`
+  return hours ? `${hours}h ${minutes}m ${seconds % 60}s` : `${minutes}m ${seconds % 60}s`
 }

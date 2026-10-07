@@ -144,7 +144,7 @@ function subagentToasts(api: TuiPluginApi) {
     try {
       api.ui.toast({
         variant: ok ? "success" : "error",
-        title: ok ? "Subagent selesai" : "Subagent gagal",
+        title: ok ? "Subagent finished" : "Subagent failed",
         message: label,
         duration: ok ? 4000 : 6000,
       })
@@ -155,7 +155,7 @@ function subagentToasts(api: TuiPluginApi) {
   api.lifecycle.onDispose(() => { off(); previous.clear() })
 }
 
-/** Whether the sidebar renders the "Progres tugas" card. Off unless explicitly enabled. */
+/** Whether the sidebar renders the "Task progress" card. Off unless explicitly enabled. */
 function taskProgressVisible() {
   const raw = String(process.env.OPENCODE_SUBAGENT_TASK_PROGRESS ?? "").trim().toLowerCase()
   return !(raw === "" || raw === "0" || raw === "false" || raw === "off" || raw === "no")
@@ -173,7 +173,7 @@ export function InfoCard(props: { api: TuiPluginApi; name: string; title: string
     props.api.kv.set(`studio.card.${props.name}`, next)
   }
   const unregister = props.api.command?.register(() => [{
-    title: `Studio: ${open() ? "tutup" : "buka"} ${props.title}`,
+    title: `Studio: ${open() ? "close" : "open"} ${props.title}`,
     value: `studio.card.${props.name}`,
     category: "Studio",
     slash: { name: `studio-${props.name}` },
@@ -215,7 +215,7 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
       if (pending) return
       pending = true
       try { const next = await fetchSubagent(props.api, id, controller.signal); if (!controller.signal.aborted) { setData(next); setError("") } }
-      catch { if (!controller.signal.aborted) setError("Detail belum tersedia; mencoba lagi.") }
+      catch { if (!controller.signal.aborted) setError("Details not available yet; retrying.") }
       finally { pending = false }
     }
     void refresh()
@@ -240,15 +240,15 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
       detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined,
       detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined,
     ].filter((part): part is string => Boolean(part)).join(" · ")
-    return `${detail?.title ?? "Memuat judul…"}\n${stat}`
+    return `${detail?.title ?? "Loading title…"}\n${stat}`
   }
-  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Baru berakhir" : props.agent.label}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={summary()}>
+  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Just ended" : props.agent.label}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={summary()}>
     <Show when={props.agent.target}><text fg={theme().text} wrapMode="word">{props.agent.target}</text></Show>
     <Show when={error()}><text fg={theme().warning}>{error()}</text></Show>
     <Show when={data()}>{(detail) => <box gap={1}>
-      <text fg={theme().text} wrapMode="word">{detail().activity ? `${detail().current ? "Sekarang" : "Terakhir"} · ${detail().activity!.action} · ${detail().activity!.status}` : "Aktivitas tool belum dilaporkan."}</text>
+      <text fg={theme().text} wrapMode="word">{detail().activity ? `${detail().current ? "Now" : "Last"} · ${detail().activity!.action} · ${detail().activity!.status}` : "Tool activity not reported yet."}</text>
       <Show when={detail().activity?.target}><text fg={theme().textMuted} wrapMode="char">{detail().activity?.target}</text></Show>
-      <text fg={theme().textMuted}>{detail().todos.length ? `${detail().completed}/${detail().todos.length} tugas selesai` : "Progres tugas belum dilaporkan."}</text>
+      <text fg={theme().textMuted}>{detail().todos.length ? `${detail().completed}/${detail().todos.length} tasks done` : "Task progress not reported yet."}</text>
       <For each={detail().todos}>{(todo) => <text fg={todo.status === "in_progress" ? theme().text : theme().textMuted} wrapMode="word">{todo.status === "completed" ? "✓" : todo.status === "in_progress" ? "›" : "·"} {todo.content}</text>}</For>
     </box>}</Show>
   </InfoCard>
@@ -269,16 +269,16 @@ export function WorkspaceCard(props: { api: TuiPluginApi; id: string }) {
       if (pending) return
       pending = true
       try { const next = await inspectWorkspace(root, controller.signal); if (!controller.signal.aborted) { setData(next); setError("") } }
-      catch { if (!controller.signal.aborted) setError("Pemindaian Git gagal. Periksa akses folder dan instalasi Git.") }
+      catch { if (!controller.signal.aborted) setError("Git scan failed. Check folder access and Git installation.") }
       finally { pending = false }
     }
     void refresh()
     const timer = setInterval(() => void refresh(), 15000)
     onCleanup(() => { controller.abort(); clearInterval(timer) })
   })
-  return <InfoCard api={props.api} name="files" title="Ruang kerja & berkas" onOpen={setOpen} summary={error() || (data() ? `${data()!.repos.length} repo Git · ${data()!.repos.reduce((n, repo) => n + repo.files.length, 0)} entri berubah` : open() ? "Memindai repositori…" : "Buka untuk memindai repo root dan subfolder")}>
+  return <InfoCard api={props.api} name="files" title="Workspace & files" onOpen={setOpen} summary={error() || (data() ? `${data()!.repos.length} Git repos · ${data()!.repos.reduce((n, repo) => n + repo.files.length, 0)} changed entries` : open() ? "Scanning repositories…" : "Open to scan the repo root and subfolders")}>
     <text fg={theme().textMuted} wrapMode="char">{props.api.state.path.directory}</text>
-    <text fg={theme().textMuted}>Git lokal, bukan hanya perubahan sesi · refresh 15 dtk</text>
+    <text fg={theme().textMuted}>Local Git, not just session changes · refresh 15s</text>
     <Show when={data()}>{(scan) => <box gap={1}>
       <For each={scan().repos}>{(repo) => <box>
         <text fg={theme().primary} wrapMode="char"><b>{repo.path}</b> · {repo.branch}</text>
@@ -286,9 +286,9 @@ export function WorkspaceCard(props: { api: TuiPluginApi; id: string }) {
         <For each={repo.files}>{(file) => <text fg={theme().text} wrapMode="char">{file.status} {basename(file.path)}</text>}</For>
       </box>}</For>
       <For each={scan().errors}>{(message) => <text fg={theme().warning}>{message}</text>}</For>
-      <Show when={scan().limited}><text fg={theme().warning}>Cakupan dibatasi 4 tingkat / 300 folder.</text></Show>
+      <Show when={scan().limited}><text fg={theme().warning}>Scope limited to 4 levels / 300 folders.</text></Show>
     </box>}</Show>
-    <text fg={theme().textMuted}>{props.api.state.session.diff(props.id).length} berkas tercatat terpisah oleh sesi OpenCode.</text>
+    <text fg={theme().textMuted}>{props.api.state.session.diff(props.id).length} files tracked separately by the OpenCode session.</text>
   </InfoCard>
 }
 
@@ -304,12 +304,12 @@ export function AsyncIdentity(props: { api: TuiPluginApi; id: string; compact?: 
 
 /** Describes why the parent is waiting, if it is. */
 export function waitingReason(api: TuiPluginApi, id: string, activity: ReturnType<typeof sidebarActivity>) {
-  if (api.state.session.permission(id).length) return "Menunggu izin kamu"
-  if (api.state.session.question(id).length) return "Menunggu pilihan / jawaban kamu"
-  if (activity.status?.type === "retry") return "Menunggu percobaan ulang model"
-  if (activity.current?.tool === "task" || activity.current?.tool === "subagent" || (!activity.current && activity.agents.length)) return "Menunggu hasil subagent"
-  if (activity.current) return `${activity.current.state.status === "pending" ? "Mengantre" : "Menunggu hasil"} · ${activityDetail(activity.current).action}`
-  if (activity.status?.type === "busy") return "Menunggu respons model"
+  if (api.state.session.permission(id).length) return "Waiting for your permission"
+  if (api.state.session.question(id).length) return "Waiting for your choice / answer"
+  if (activity.status?.type === "retry") return "Waiting for model retry"
+  if (activity.current?.tool === "task" || activity.current?.tool === "subagent" || (!activity.current && activity.agents.length)) return "Waiting for subagent results"
+  if (activity.current) return `${activity.current.state.status === "pending" ? "Queued" : "Waiting for result"} · ${activityDetail(activity.current).action}`
+  if (activity.status?.type === "busy") return "Waiting for model response"
   return ""
 }
 
@@ -324,7 +324,7 @@ export function ObservedWait(props: { reason: string; session: string }) {
     const timer = setInterval(() => setSeconds(Math.floor((Date.now() - start) / 1000)), 1000)
     onCleanup(() => clearInterval(timer))
   })
-  return <Show when={props.reason}><text wrapMode="word">{props.reason} · {seconds()} dtk teramati</text></Show>
+  return <Show when={props.reason}><text wrapMode="word">{props.reason} · {seconds()}s observed</text></Show>
 }
 
 export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean }) {
@@ -338,7 +338,7 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
     <box gap={1} flexShrink={0}>
       <box>
         <text fg={theme().text} wrapMode="char"><b>{data().model}</b></text>
-        <text fg={theme().textMuted}>{data().agent ?? "Sesi baru"} · {activity().status?.type === "busy" ? "Bekerja" : activity().status?.type === "retry" ? "Mencoba ulang" : "Siap"}</text>
+        <text fg={theme().textMuted}>{data().agent ?? "New session"} · {activity().status?.type === "busy" ? "Working" : activity().status?.type === "retry" ? "Retrying" : "Ready"}</text>
       </box>
       <ObservedWait reason={waitingReason(props.api, props.id, activity())} session={props.id} />
       <box>
@@ -347,24 +347,24 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
           <For each={agents().slice(0, limit())}>{(row) =>
             <SubagentCard api={props.api} agent={row.item} ended={row.ended} />
           }</For>
-          <Show when={agents().length > limit()}><text fg={theme().textMuted}>+{agents().length - limit()} agent lainnya</text></Show>
+          <Show when={agents().length > limit()}><text fg={theme().textMuted}>+{agents().length - limit()} more agents</text></Show>
         </Show>
       </box>
       <Show when={activity().attention > 0}>
         <box>
-          <text fg={theme().warning}><b>Butuh jawaban · {activity().attention}</b></text>
-          <text fg={theme().textMuted}>Periksa permintaan di percakapan.</text>
+          <text fg={theme().warning}><b>Needs answer · {activity().attention}</b></text>
+          <text fg={theme().textMuted}>Check the request in the conversation.</text>
         </box>
       </Show>
-      <InfoCard api={props.api} name="context" title="Laporan token provider" summary={data().used === undefined ? "Token belum dilaporkan" : `${compact(data().used ?? NaN)} token · ${data().percent === undefined ? "konteks —" : `${data().percent}% konteks`} · $${data().cost.toFixed(4)}`}>
+      <InfoCard api={props.api} name="context" title="Provider token report" summary={data().used === undefined ? "Tokens not reported yet" : `${compact(data().used ?? NaN)} token · ${data().percent === undefined ? "context —" : `${data().percent}% context`} · $${data().cost.toFixed(4)}`}>
         <text fg={theme().textMuted} wrapMode="char">Provider · {data().provider}</text>
       </InfoCard>
       <Show when={taskProgressVisible()}>
-        <InfoCard api={props.api} name="progress" title="Progres tugas" initialOpen summary={activity().total === 0 ? "Belum ada daftar tugas" : `${activity().completed}/${activity().total} selesai · ${activity().todos.length} tersisa`}>
+        <InfoCard api={props.api} name="progress" title="Task progress" initialOpen summary={activity().total === 0 ? "No task list yet" : `${activity().completed}/${activity().total} done · ${activity().todos.length} remaining`}>
           <Show when={activity().total > 0}>
-            <text fg={theme().textMuted}>{activity().todos.filter((todo) => todo.status === "in_progress").length} berjalan · {activity().todos.filter((todo) => todo.status === "pending").length} antre</text>
+            <text fg={theme().textMuted}>{activity().todos.filter((todo) => todo.status === "in_progress").length} running · {activity().todos.filter((todo) => todo.status === "pending").length} queued</text>
             <For each={[...props.api.state.session.todo(props.id)].sort((a, b) => ({ in_progress: 0, pending: 1, completed: 2 }[a.status] ?? 3) - ({ in_progress: 0, pending: 1, completed: 2 }[b.status] ?? 3))}>{(todo) =>
-              <box marginTop={1}><text fg={todo.status === "in_progress" ? theme().primary : theme().textMuted}>{todo.status === "completed" ? "✓ Selesai" : todo.status === "in_progress" ? "› Sedang dikerjakan" : "· Menunggu"}</text><text fg={todo.status === "completed" ? theme().textMuted : theme().text} wrapMode="word">{todo.content}</text></box>
+              <box marginTop={1}><text fg={todo.status === "in_progress" ? theme().primary : theme().textMuted}>{todo.status === "completed" ? "✓ Done" : todo.status === "in_progress" ? "› In progress" : "· Pending"}</text><text fg={todo.status === "completed" ? theme().textMuted : theme().text} wrapMode="word">{todo.content}</text></box>
             }</For>
           </Show>
         </InfoCard>
@@ -401,19 +401,19 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
       if (target) list.push({ text: ` · ${basename(target)}`, tone: "muted", priority: 3 })
     }
     list.push({ text: " | /studio-panel · detail", tone: "accent", priority: 4 })
-    list.push({ text: ` | ${props.api.state.vcs?.branch ?? "lokal"}`, tone: "muted", priority: 5 })
+    list.push({ text: ` | ${props.api.state.vcs?.branch ?? "local"}`, tone: "muted", priority: 5 })
     return fitStatus(list, width())
   }
   const open = () => props.api.ui.dialog.replace(() => <props.api.ui.Dialog onClose={() => props.api.ui.dialog.clear()}>
     <box padding={1}>
-      <text fg={theme().primary}><b>Studio · Detail sesi</b> · Esc tutup</text>
+      <text fg={theme().primary}><b>Studio · Session detail</b> · Esc to close</text>
       <scrollbox height={Math.max(5, size().height - 10)}>
         <Overview api={props.api} id={props.id} mini />
       </scrollbox>
     </box>
   </props.api.ui.Dialog>)
   const unregister = props.api.command?.register(() => [{
-    title: "Studio: buka seluruh informasi sesi", value: "studio.panel", category: "Studio", slash: { name: "studio-panel" },
+    title: "Studio: open all session information", value: "studio.panel", category: "Studio", slash: { name: "studio-panel" },
     onSelect: () => open(),
   }])
   if (unregister) onCleanup(unregister)
@@ -438,7 +438,7 @@ function StatusBar(props: { api: TuiPluginApi }) {
       <Show when={size().width >= 65}>
         <text fg={theme().textMuted}>{mcpPluginLabel(props.api)}</text>
       </Show>
-      <text fg={theme().textMuted}>{props.api.state.vcs?.branch ?? "lokal"}</text>
+      <text fg={theme().textMuted}>{props.api.state.vcs?.branch ?? "local"}</text>
     </box>
   )
 }
@@ -457,7 +457,7 @@ const plugin: TuiPluginModule = {
       slots: {
         sidebar_title(_ctx, props) {
           return <box gap={1} paddingBottom={1}>
-            <text fg={api.theme.current.primary}><b>ASYNC AGENT / SESI</b></text>
+            <text fg={api.theme.current.primary}><b>ASYNC AGENT / SESSION</b></text>
             <text fg={api.theme.current.text} wrapMode="word"><b>{props.title}</b></text>
             <Show when={props.share_url}><text fg={api.theme.current.textMuted} wrapMode="char">{props.share_url}</text></Show>
           </box>
