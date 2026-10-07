@@ -61,12 +61,13 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
     const running = status ? status.type !== "idle" : tool.state.status === "running" || tool.state.status === "pending"
     if (!running && !waiting) return []
     return [{
+      key: tool.callID,
       id: child ?? tool.callID,
       name: typeof tool.state.input.subagent_type === "string" ? tool.state.input.subagent_type : "subagent",
       label: waiting ? "Waiting for answer" : status?.type === "retry" ? "Retrying" : "Working",
       target: activityDetail(tool).target,
     }]
-  }).filter((agent, index, list) => list.findIndex((item) => item.id === agent.id) === index)
+  }).filter((agent, index, list) => list.findIndex((item) => item.key === agent.key) === index)
   const todos = api.state.session.todo(id)
   return {
     mcp,

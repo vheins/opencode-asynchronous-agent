@@ -64,12 +64,13 @@ function sidebarActivity(api, id) {
     if (!running && !waiting)
       return [];
     return [{
+      key: tool.callID,
       id: child ?? tool.callID,
       name: typeof tool.state.input.subagent_type === "string" ? tool.state.input.subagent_type : "subagent",
       label: waiting ? "Waiting for answer" : status?.type === "retry" ? "Retrying" : "Working",
       target: activityDetail(tool).target
     }];
-  }).filter((agent, index, list) => list.findIndex((item) => item.id === agent.id) === index);
+  }).filter((agent, index, list) => list.findIndex((item) => item.key === agent.key) === index);
   const todos = api.state.session.todo(id);
   return {
     mcp,
@@ -837,31 +838,35 @@ function CreatureCard(props) {
   const seen = new Map;
   const [agents, setAgents] = createSignal([]);
   createEffect(() => {
-    let added = false;
+    let changed = false;
     for (const agent of activity().agents) {
-      if (!seen.has(agent.id)) {
-        seen.set(agent.id, agent.name);
-        added = true;
+      const previous = seen.get(agent.key);
+      if (!previous || previous.name !== agent.name || previous.session !== agent.id) {
+        seen.set(agent.key, {
+          name: agent.name,
+          session: agent.id
+        });
+        changed = true;
       }
     }
-    if (added)
-      setAgents([...seen].map(([id, name]) => ({
-        id,
-        name
+    if (changed)
+      setAgents([...seen].map(([key, value]) => ({
+        key,
+        ...value
       })));
   });
   const cells = createMemo(() => {
-    const live = new Set(activity().agents.map((agent) => agent.id));
+    const live = new Set(activity().agents.map((agent) => agent.key));
     return [{
       key: `main:${props.id}`,
       name: main().agent ?? "Main",
       count: main().count,
       working: mainWorking()
     }, ...agents().map((agent) => ({
-      key: `agent:${agent.id}`,
+      key: `agent:${agent.key}`,
       name: agent.name,
-      count: sessionMetrics(props.api, agent.id).count,
-      working: live.has(agent.id)
+      count: sessionMetrics(props.api, agent.session).count,
+      working: live.has(agent.key)
     }))];
   });
   const rows = createMemo(() => {
@@ -1036,7 +1041,7 @@ function Overview(props) {
   const theme = () => props.api.theme.current;
   const data = createMemo(() => sessionMetrics(props.api, props.id));
   const activity = createMemo(() => sidebarActivity(props.api, props.id));
-  const agents = retainActivity(() => activity().agents, (agent) => agent.id, () => props.id);
+  const agents = retainActivity(() => activity().agents, (agent) => agent.key, () => props.id);
   const size = useTerminalDimensions();
   const limit = () => size().height < 35 ? 2 : 4;
   return (() => {
