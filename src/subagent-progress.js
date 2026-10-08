@@ -121,18 +121,19 @@ export function summarizeTodos(todos) {
  * Render the report text injected into the parent session.
  *
  * The header reads like an inline tool-call row: an arrow icon, the reporting
- * child agent, and the recipient parent agent, followed by the compact counts.
- * Each todo is listed beneath it.
+ * child agent, the child's session slug (its "nickname"), and the recipient
+ * parent agent, followed by the compact counts. Each todo is listed beneath it.
  *
- * @param {{ sessionID: string, agent?: string, parentAgent?: string, parentID?: string, title?: string, todos?: Array<object> }} input
+ * @param {{ sessionID: string, agent?: string, nickname?: string, parentAgent?: string, parentID?: string, title?: string, todos?: Array<object> }} input
  * @returns {string}
  */
 export function formatProgressReport(input) {
   const summary = summarizeTodos(input?.todos)
   const reporter = input?.agent || input?.sessionID || "subagent"
+  const nickname = input?.nickname ? ` · ${input.nickname}` : ""
   const recipient = input?.parentAgent || input?.parentID || "parent"
   const title = input?.title ? ` · ${JSON.stringify(input.title)}` : ""
-  const header = `⤷ ${reporter} · reporting to ${recipient}${title} — ${summary.text}`
+  const header = `⤷ ${reporter}${nickname} · reporting to ${recipient}${title} — ${summary.text}`
   const lines = (Array.isArray(input?.todos) ? input.todos : []).map(
     (todo) => `  - [${todo?.status ?? "?"}] ${todo?.content ?? ""}`.trimEnd(),
   )
@@ -183,11 +184,13 @@ export function createSubagentProgress(options = {}) {
   const parents = new Map()
   const roots = new Set()
   const agents = new Map()
+  const slugs = new Map()
 
   /** Record child -> parent linkage (or mark a session as a root) from info. */
   function rememberParent(info) {
     if (!info || typeof info.id !== "string") return
     if (typeof info.agent === "string" && info.agent) agents.set(info.id, info.agent)
+    if (typeof info.slug === "string" && info.slug) slugs.set(info.id, info.slug)
     if (typeof info.parentID === "string" && info.parentID) {
       parents.set(info.id, info.parentID)
       roots.delete(info.id)
@@ -251,7 +254,7 @@ export function createSubagentProgress(options = {}) {
     return true
   }
 
-  /** Read a session's agent name (best-effort) for the report header. */
+  /** Read a session's agent name and slug (best-effort) for the report header. */
   async function agentOf(sessionID) {
     const api = client?.session
     if (typeof api?.get !== "function") return undefined
@@ -260,6 +263,21 @@ export function createSubagentProgress(options = {}) {
       const info = response && typeof response === "object" && "data" in response ? response.data : response
       rememberParent(info)
       return typeof info?.agent === "string" && info.agent ? info.agent : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Read a session's slug (its "nickname") from the registry, then the SDK. */
+  async function slugOf(sessionID) {
+    if (slugs.has(sessionID)) return slugs.get(sessionID)
+    const api = client?.session
+    if (typeof api?.get !== "function") return undefined
+    try {
+      const response = await api.get({ path: { id: sessionID } })
+      const info = response && typeof response === "object" && "data" in response ? response.data : response
+      rememberParent(info)
+      return slugs.get(sessionID)
     } catch {
       return undefined
     }
@@ -290,8 +308,9 @@ export function createSubagentProgress(options = {}) {
     if (!shouldReport(state, summary, now(), intervalMs)) return
 
     const agent = agents.get(sessionID) ?? (await agentOf(sessionID))
+    const nickname = await slugOf(sessionID)
     const parentAgent = agents.get(parentID)
-    const text = formatProgressReport({ sessionID, agent, parentAgent, parentID, title: props.title, todos })
+    const text = formatProgressReport({ sessionID, agent, nickname, parentAgent, parentID, title: props.title, todos })
     try {
       const sent = await inject(parentID, text)
       if (!sent) return
@@ -315,6 +334,7 @@ export function createSubagentProgress(options = {}) {
       parents.clear()
       roots.clear()
       agents.clear()
+      slugs.clear()
     },
   }
 }

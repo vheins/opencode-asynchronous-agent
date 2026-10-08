@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { sidebarActivity } from "./model"
+import { mainTodoProgress, renderBar, sidebarActivity, subagentTodoProgress } from "./model"
 
 function fakeApi(status: { type: string } | undefined, todos: { status: string }[] = []) {
   const part = {
@@ -97,4 +97,39 @@ test("running agents are ordered before finished ones", () => {
   const agents = sidebarActivity(api, "ses_parent").agents
   expect(agents.map((agent) => agent.name)).toEqual(["Live1", "Done1", "Done2"])
   expect(agents[0].active).toBe(true)
+})
+
+test("renderBar fills to the fraction boundary and never exceeds the width", () => {
+  expect(renderBar(0, 10)).toBe("░".repeat(10))
+  const full = renderBar(1, 10, 0)
+  expect(full).toHaveLength(10)
+  expect(full).not.toContain("░")
+  const half = renderBar(0.5, 10, 0)
+  expect(half).toHaveLength(10)
+  expect([...half].filter((cell) => cell !== "░")).toHaveLength(5)
+  expect([...renderBar(2, 4, 0)]).not.toContain("░")
+  expect(renderBar(-1, 4, 0)).toBe("░░░░")
+})
+
+test("renderBar animates the filled region without changing its level", () => {
+  const filledCount = (bar: string) => [...bar].filter((cell) => cell !== "░").length
+  const first = renderBar(0.6, 12, 0)
+  const later = renderBar(0.6, 12, 3)
+  expect(filledCount(first)).toBe(filledCount(later))
+  expect(first).not.toBe(later)
+})
+
+test("mainTodoProgress reports completed over the session's own todos", () => {
+  const progress = mainTodoProgress([{ status: "completed" }, { status: "completed" }, { status: "pending" }])
+  expect(progress).toEqual({ completed: 2, total: 3, fraction: 2 / 3 })
+  expect(mainTodoProgress([])).toEqual({ completed: 0, total: 0, fraction: 0 })
+})
+
+test("subagentTodoProgress sums completed over total across children", () => {
+  const progress = subagentTodoProgress([
+    { progress: { completed: 2, inProgress: 1, total: 4 } },
+    { progress: { completed: 1, inProgress: 0, total: 2 } },
+  ])
+  expect(progress).toEqual({ running: 1, completed: 3, total: 6, fraction: 3 / 6 })
+  expect(subagentTodoProgress([])).toEqual({ running: 0, completed: 0, total: 0, fraction: 0 })
 })

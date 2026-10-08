@@ -638,26 +638,26 @@ export function ObservedWait(props: { reason: string; session: string }) {
 
 /**
  * Two progress bars shown above the Creatures card: the main agent's own todo
- * completion, and the cumulative running/total across every subagent. Both are
- * driven by the same reactive todo store the cards read, so they update live.
+ * completion and the cumulative completed/total across every subagent. Both are
+ * driven by the same reactive todo store the cards read, so they update live. A
+ * fast clock drives the sweeping animation on each bar; the fill boundary always
+ * tracks the real completed/total, so motion never distorts the level.
  */
 export function ProgressBars(props: { api: TuiPluginApi; id: string }) {
   const theme = () => props.api.theme.current
   const size = useTerminalDimensions()
-  const width = () => Math.max(6, Math.min(30, (size().width || 40) - 14))
+  const width = () => Math.max(6, Math.min(30, (size().width || 40) - 8))
+  const frame = createClock(80)
   const main = createMemo(() => mainTodoProgress(props.api.state.session.todo(props.id)))
   const subs = createMemo(() => subagentTodoProgress(sidebarActivity(props.api, props.id).agents))
-  const label = (text: string) => <text fg={theme().textMuted} wrapMode="none">{text}</text>
   return <box>
     <box flexDirection="row">
-      {label("Main todos  ")}
-      <text fg={theme().primary} wrapMode="none">{renderBar(main().fraction, width())}</text>
-      {label(`  ${main().completed}/${main().total}`)}
+      <text fg={theme().primary} wrapMode="none">{renderBar(main().fraction, width(), frame())}</text>
+      <text fg={theme().textMuted} wrapMode="none">{`  ${main().completed}/${main().total}`}</text>
     </box>
     <box flexDirection="row">
-      {label("Subagent    ")}
-      <text fg={theme().accent} wrapMode="none">{renderBar(subs().fraction, width())}</text>
-      {label(`  ${subs().running} running / ${subs().total}`)}
+      <text fg={theme().accent} wrapMode="none">{renderBar(subs().fraction, width(), frame())}</text>
+      <text fg={theme().textMuted} wrapMode="none">{`  ${subs().completed}/${subs().total}`}</text>
     </box>
   </box>
 }

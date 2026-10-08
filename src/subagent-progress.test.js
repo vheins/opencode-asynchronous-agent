@@ -83,11 +83,16 @@ test("summarizeTodos counts each status and flags terminal", () => {
   expect(summarizeTodos([]).terminal).toBe(false)
 })
 
-test("formatProgressReport includes reporter, recipient, counts, and each todo line", () => {
-  const text = formatProgressReport({ sessionID: "ses_child", agent: "frontend", parentAgent: "orchestrator", title: "T", todos: TODOS })
-  expect(text).toContain("⤷ frontend · reporting to orchestrator")
+test("formatProgressReport includes reporter, nickname, recipient, counts, and each todo line", () => {
+  const text = formatProgressReport({ sessionID: "ses_child", agent: "frontend", nickname: "hidden-panda", parentAgent: "orchestrator", title: "T", todos: TODOS })
+  expect(text).toContain("⤷ frontend · hidden-panda · reporting to orchestrator")
   expect(text).toContain("1/3 done")
   expect(text).toContain("- [in_progress] b")
+})
+
+test("formatProgressReport omits the nickname when the slug is unknown", () => {
+  const text = formatProgressReport({ sessionID: "ses_child", agent: "frontend", parentAgent: "orchestrator", todos: TODOS })
+  expect(text).toContain("⤷ frontend · reporting to orchestrator")
 })
 
 test("shouldReport sends final once, coalesces non-final by interval", () => {
@@ -107,11 +112,11 @@ test("injects a visible report into the parent when a child updates todos", asyn
   const { client, calls } = fakeClient({
     sessions: {
       ses_parent: { id: "ses_parent", agent: "orchestrator", model: { id: "m", providerID: "p" } },
-      ses_child: { id: "ses_child", parentID: "ses_parent", agent: "frontend" },
+      ses_child: { id: "ses_child", parentID: "ses_parent", agent: "frontend", slug: "hidden-panda" },
     },
   })
   const progress = createSubagentProgress({ client, now: () => 1000, intervalMs: 120000 })
-  await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_child", parentID: "ses_parent", agent: "frontend" } } } })
+  await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_child", parentID: "ses_parent", agent: "frontend", slug: "hidden-panda" } } } })
   await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_parent", agent: "orchestrator" } } } })
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
   expect(calls.promptAsync.length).toBe(1)
@@ -119,7 +124,15 @@ test("injects a visible report into the parent when a child updates todos", asyn
   expect(call.path.id).toBe("ses_parent")
   expect(call.body.agent).toBe("orchestrator")
   expect(call.body.parts[0].synthetic).toBeUndefined()
-  expect(call.body.parts[0].text).toContain("⤷ frontend · reporting to orchestrator")
+  expect(call.body.parts[0].text).toContain("⤷ frontend · hidden-panda · reporting to orchestrator")
+})
+
+test("resolves the child slug lazily via session.get when no event was seen", async () => {
+  const { client, calls } = fakeClient({ sessions: { ses_child: { id: "ses_child", parentID: "ses_parent", agent: "backend", slug: "mighty-island" } } })
+  const progress = createSubagentProgress({ client, now: () => 1000 })
+  await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
+  expect(calls.promptAsync.length).toBe(1)
+  expect(calls.promptAsync[0].body.parts[0].text).toContain("backend · mighty-island · reporting to ses_parent")
 })
 
 test("does not inject for a root session (no parent)", async () => {

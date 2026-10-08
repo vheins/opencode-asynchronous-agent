@@ -113,18 +113,35 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
 }
 
 /**
- * Renders a block progress bar of `width` cells, filled by `fraction` (0..1).
- * Clamped so an empty list yields a fully empty bar and overflow a full one.
+ * Renders a block progress bar of `width` cells filled by `fraction` (0..1),
+ * clamped so an empty list yields a fully empty bar and overflow a full one.
+ *
+ * The fill boundary always reflects `fraction` (completed/total); `frame` adds
+ * a brighter window that sweeps across the filled region so a live bar reads as
+ * loading without changing the level it reports. Cells before the boundary are
+ * the medium shade, the sweeping window the full block, and the remainder the
+ * light shade.
  *
  * @param {number} fraction
  * @param {number} width
+ * @param {number} [frame]
  * @returns {string}
  */
-export function renderBar(fraction: number, width: number): string {
+export function renderBar(fraction: number, width: number, frame = 0): string {
   const cells = Math.max(1, Math.floor(width))
   const ratio = Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : 0
   const filled = Math.round(ratio * cells)
-  return `${"█".repeat(filled)}${"░".repeat(cells - filled)}`
+  if (filled <= 0) return "░".repeat(cells)
+  const window = Math.max(1, Math.round(cells / 4))
+  const span = filled + window - 1
+  const head = ((Math.floor(Number.isFinite(frame) ? frame : 0) % span) + span) % span - window + 1
+  let bar = ""
+  for (let index = 0; index < cells; index++) {
+    if (index >= filled) bar += "░"
+    else if (index >= head && index < head + window) bar += "█"
+    else bar += "▓"
+  }
+  return bar
 }
 
 /**
@@ -140,8 +157,9 @@ export function mainTodoProgress(todos: ReadonlyArray<{ status: string }>) {
 }
 
 /**
- * Cumulative subagent todo progress across every child: the running count is
- * the sum of each child's in-progress todos, over the sum of all child todos.
+ * Cumulative subagent todo progress across every child: completed over the sum
+ * of all child todos, so the bar reports the same completed/total shape as the
+ * main agent. `running` is retained for callers that want the in-progress count.
  *
  * @param {ReadonlyArray<{ progress?: { completed: number, inProgress: number, total: number } }>} agents
  * @returns {{ running: number, completed: number, total: number, fraction: number }}
@@ -155,5 +173,5 @@ export function subagentTodoProgress(agents: ReadonlyArray<{ progress?: { comple
     completed += agent.progress?.completed ?? 0
     total += agent.progress?.total ?? 0
   }
-  return { running, completed, total, fraction: total > 0 ? running / total : 0 }
+  return { running, completed, total, fraction: total > 0 ? completed / total : 0 }
 }
