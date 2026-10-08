@@ -2,19 +2,23 @@
  * Background-subagent control tools for the OpenCode V1 plugin entrypoint.
  *
  * OpenCode's model is push-only: the parent is notified when a background child
- * finishes, but it cannot list children, fetch a child's result on demand, wait
- * for a set of children, cancel one, or send it extra context. These tools close
- * that gap on top of the public SDK (`PluginInput.client`):
+ * finishes, but it cannot list children, fetch a child's result on demand, cancel
+ * one, or send it extra context. These tools close that gap on top of the public
+ * SDK (`PluginInput.client`):
  *
  *   - `subagent_children` — list a parent's child sessions
  *   - `subagent_result`   — fetch a child's final assistant answer
- *   - `subagent_wait`     — block until children finish or a deadline passes
  *   - `subagent_cancel`   — abort a running child
  *   - `subagent_send`     — queue extra context into a running child
  *
+ * There is deliberately no `subagent_wait`: blocking on a child defeats the
+ * asynchronous model. OpenCode already pushes a completion notice to the parent
+ * when a child finishes, and `subagent_children` / `subagent_result` cover
+ * on-demand status. A wait tool is just polling in disguise.
+ *
  * Every tool is non-destructive, degrades gracefully when an SDK method is
  * unavailable, and is disposed on unload. The pure helpers (`unwrap`,
- * `isActiveStatus`, `clampText`, `extractResult`, `pickStatus`) are exported so
+ * `clampText`, `extractResult`, `pickStatus`, `resolveTarget`) are exported so
  * they can be unit-tested without an OpenCode runtime.
  *
  * Opt-in via `OPENCODE_SUBAGENT_CONTROL=1`; setting `OPENCODE_SUBAGENT_STATUS=1`
@@ -27,12 +31,6 @@ import { tool } from "@opencode-ai/plugin"
 
 /** Default maximum characters returned by `subagent_result`. */
 export const DEFAULT_RESULT_CHARS = 20000
-
-/** Default maximum time (ms) `subagent_wait` blocks before giving up. */
-export const DEFAULT_WAIT_MS = 300000
-
-/** Default interval (ms) between `subagent_wait` status polls. */
-export const DEFAULT_POLL_MS = 1000
 
 /** Values accepted as "enabled" for the opt-in env gate. */
 const TRUTHY = new Set(["1", "true", "yes", "on", "y"])
@@ -72,18 +70,6 @@ function envInt(key, fallback) {
 export function unwrap(response) {
   if (response && typeof response === "object" && "data" in response) return response.data
   return response
-}
-
-/**
- * Whether a `SessionStatus` value means the session is still working. An absent
- * entry in the status map also means idle, so `undefined` is not active.
- *
- * @param {{ type?: string } | undefined} status
- * @returns {boolean}
- */
-export function isActiveStatus(status) {
-  const type = status?.type
-  return type === "busy" || type === "retry"
 }
 
 /**
@@ -147,14 +133,6 @@ export function pickStatus(statusMap, sessionID) {
   return status ?? { type: "idle" }
 }
 
-/** Human-readable duration. */
-function formatDuration(ms) {
-  const seconds = Math.max(0, Math.floor(ms / 1000))
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor(seconds / 60) % 60
-  return hours ? `${hours}h ${minutes}m ${seconds % 60}s` : `${minutes}m ${seconds % 60}s`
-}
-
 /**
  * Build the SDK client accessor used by every tool. Returns `undefined` when the
  * client lacks the needed session namespace, so callers can fail gracefully.
@@ -209,21 +187,13 @@ export function resolveTarget(session) {
  *
  * @param {{
  *   client?: object,
- *   now?: () => number,
- *   sleep?: (ms: number) => Promise<void>,
  *   resultChars?: number,
- *   waitMs?: number,
- *   pollMs?: number,
  * }} [options]
  * @returns {{ tool: Record<string, unknown>, dispose: () => Promise<void> }}
  */
 export function createSubagentControl(options = {}) {
   const client = options.client
-  const now = options.now ?? (() => Date.now())
-  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
   const resultChars = options.resultChars ?? envInt("OPENCODE_SUBAGENT_RESULT_CHARS", DEFAULT_RESULT_CHARS)
-  const waitMs = options.waitMs ?? envInt("OPENCODE_SUBAGENT_WAIT_MS", DEFAULT_WAIT_MS)
-  const pollMs = options.pollMs ?? envInt("OPENCODE_SUBAGENT_POLL_MS", DEFAULT_POLL_MS)
 
   const childrenTool = tool({
     description:
@@ -315,71 +285,6 @@ export function createSubagentControl(options = {}) {
     },
   })
 
-  const waitTool = tool({
-    description:
-      "Block until the given subagent sessions finish, or until a timeout elapses. " +
-      "Returns each session's final status. Use to JOIN parallel background " +
-      "subagents before aggregating their results. Prefer this over repeatedly " +
-      "calling subagent_status.",
-    args: {
-      sessionIDs: tool.schema
-        .array(tool.schema.string())
-        .describe("Subagent session ids to wait for. Defaults to none."),
-      timeoutMs: tool.schema
-        .number()
-        .optional()
-        .describe("Maximum time to wait in milliseconds (default 300000)."),
-    },
-    async execute(args, context) {
-      const api = sessionApi(client)
-      const ids = Array.isArray(args.sessionIDs) ? args.sessionIDs.filter((id) => typeof id === "string" && id) : []
-      if (ids.length === 0) {
-        return { title: "subagent_wait · no targets", output: "No session ids provided." }
-      }
-      if (typeof api?.status !== "function") {
-        return {
-          title: "subagent_wait unavailable",
-          output: "subagent_wait unavailable: this OpenCode build exposes no session.status SDK method.",
-        }
-      }
-      const signal = context?.abort
-      const timeout = Number.isFinite(args.timeoutMs) && args.timeoutMs > 0 ? Math.floor(args.timeoutMs) : waitMs
-      const deadline = now() + timeout
-      const interval = Math.min(pollMs, timeout)
-      let statusMap = {}
-      let pending = ids
-      let aborted = false
-      try {
-        while (true) {
-          statusMap = await readStatusMap(api)
-          pending = ids.filter((id) => isActiveStatus(pickStatus(statusMap, id)))
-          if (pending.length === 0 || now() >= deadline) break
-          if (signal?.aborted) {
-            aborted = true
-            break
-          }
-          await sleep(Math.min(interval, Math.max(0, deadline - now())))
-        }
-      } catch (error) {
-        return { title: "subagent_wait failed", output: `Failed while polling status: ${errorText(error)}` }
-      }
-      const rows = ids.map((id) => ({ sessionID: id, status: pickStatus(statusMap, id).type }))
-      const done = rows.filter((row) => !isActiveStatus({ type: row.status })).length
-      const body = rows.map((row) => `- [${row.status}] ${row.sessionID}`)
-      const timedOut = pending.length > 0
-      const header = aborted
-        ? `Wait cancelled: ${done}/${ids.length} finished, still active: ${pending.join(", ")}`
-        : timedOut
-          ? `Timed out after ${formatDuration(timeout)}: ${done}/${ids.length} finished, still active: ${pending.join(", ")}`
-          : `All ${ids.length} subagent(s) finished`
-      return {
-        title: `subagent_wait · ${done}/${ids.length}`,
-        output: [header, ...body].join("\n"),
-        metadata: { sessions: rows, timedOut, pending, aborted },
-      }
-    },
-  })
-
   const cancelTool = tool({
     description:
       "Abort a running subagent session. Use to stop a background subagent that is " +
@@ -461,7 +366,6 @@ export function createSubagentControl(options = {}) {
     tool: {
       subagent_children: childrenTool,
       subagent_result: resultTool,
-      subagent_wait: waitTool,
       subagent_cancel: cancelTool,
       subagent_send: sendTool,
     },

@@ -4,7 +4,6 @@ import {
   controlEnabled,
   createSubagentControl,
   extractResult,
-  isActiveStatus,
   pickStatus,
   resolveTarget,
   unwrap,
@@ -49,13 +48,6 @@ test("unwrap tolerates both { data } and bare payloads", () => {
   expect(unwrap([1, 2])).toEqual([1, 2])
   expect(unwrap(undefined)).toBeUndefined()
   expect(unwrap({ ok: true })).toEqual({ ok: true })
-})
-
-test("isActiveStatus treats busy/retry as active and idle/undefined as not", () => {
-  expect(isActiveStatus({ type: "busy" })).toBe(true)
-  expect(isActiveStatus({ type: "retry" })).toBe(true)
-  expect(isActiveStatus({ type: "idle" })).toBe(false)
-  expect(isActiveStatus(undefined)).toBe(false)
 })
 
 test("pickStatus defaults to idle for an unknown session", () => {
@@ -162,76 +154,6 @@ test("subagent_result reports an empty session", async () => {
   expect(result.output).toContain("No assistant answer")
 })
 
-test("subagent_wait returns immediately when nothing is active", async () => {
-  let clock = 0
-  const { client, calls } = fakeClient({ status: {} })
-  const control = createSubagentControl({ client, now: () => clock, sleep: async () => {} })
-  const result = await control.tool.subagent_wait.execute({ sessionIDs: ["c1", "c2"], timeoutMs: 5000 })
-  expect(result.metadata.timedOut).toBe(false)
-  expect(result.metadata.pending).toEqual([])
-  expect(calls.status).toBe(1)
-})
-
-test("subagent_wait polls until active sessions finish", async () => {
-  let clock = 0
-  const statuses = [{ c1: { type: "busy" } }, { c1: { type: "busy" } }, {}]
-  let index = 0
-  const client = {
-    session: {
-      status: async () => ({ data: statuses[Math.min(index++, statuses.length - 1)] }),
-    },
-  }
-  const control = createSubagentControl({
-    client,
-    now: () => (clock += 100),
-    sleep: async () => {},
-    pollMs: 100,
-  })
-  const result = await control.tool.subagent_wait.execute({ sessionIDs: ["c1"], timeoutMs: 10000 })
-  expect(result.metadata.timedOut).toBe(false)
-  expect(result.metadata.sessions).toEqual([{ sessionID: "c1", status: "idle" }])
-})
-
-test("subagent_wait times out on a still-active session", async () => {
-  let clock = 0
-  const { client } = fakeClient({ status: { c1: { type: "busy" } } })
-  const control = createSubagentControl({
-    client,
-    now: () => (clock += 1000),
-    sleep: async () => {},
-    pollMs: 100,
-  })
-  const result = await control.tool.subagent_wait.execute({ sessionIDs: ["c1"], timeoutMs: 2000 })
-  expect(result.metadata.timedOut).toBe(true)
-  expect(result.metadata.pending).toEqual(["c1"])
-  expect(result.output).toContain("Timed out")
-})
-
-test("subagent_wait with no ids is a no-op", async () => {
-  const { client } = fakeClient()
-  const control = createSubagentControl({ client })
-  const result = await control.tool.subagent_wait.execute({ sessionIDs: [] })
-  expect(result.output).toContain("No session ids")
-})
-
-test("subagent_wait stops early when the parent aborts", async () => {
-  let clock = 0
-  const { client } = fakeClient({ status: { c1: { type: "busy" } } })
-  const control = createSubagentControl({
-    client,
-    now: () => (clock += 100),
-    sleep: async () => {},
-    pollMs: 100,
-  })
-  const result = await control.tool.subagent_wait.execute(
-    { sessionIDs: ["c1"], timeoutMs: 600000 },
-    { abort: { aborted: true } },
-  )
-  expect(result.metadata.aborted).toBe(true)
-  expect(result.metadata.timedOut).toBe(true)
-  expect(result.output).toContain("cancelled")
-})
-
 test("subagent_cancel aborts and reports acceptance", async () => {
   const { client, calls } = fakeClient({ abort: true })
   const control = createSubagentControl({ client })
@@ -325,13 +247,12 @@ test("resolveTarget reads agent and both model shapes", () => {
   expect(resolveTarget({ agent: "", model: null })).toEqual({})
 })
 
-test("all five tools are registered", () => {
+test("all four tools are registered", () => {
   const control = createSubagentControl({ client: fakeClient().client })
   expect(Object.keys(control.tool).sort()).toEqual([
     "subagent_cancel",
     "subagent_children",
     "subagent_result",
     "subagent_send",
-    "subagent_wait",
   ])
 })
