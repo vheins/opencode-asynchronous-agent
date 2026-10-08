@@ -62,13 +62,16 @@ function sidebarActivity(api, id) {
     const waiting = child ? api.state.session.permission(child).length + api.state.session.question(child).length : 0;
     const launching = tool.state.status === "running" || tool.state.status === "pending";
     const active2 = waiting > 0 || (status ? status.type !== "idle" : launching);
-    const label = waiting ? "Waiting for answer" : status?.type === "retry" ? "Retrying" : status?.type === "busy" ? "Working" : status?.type === "idle" ? "Idle" : launching ? "Working" : "Idle";
+    const label = waiting ? "Waiting for answer" : status?.type === "retry" ? "Retrying" : status?.type === "busy" ? "Working" : launching ? "Working" : "Done";
+    const childTodos = child ? api.state.session.todo(child) : [];
+    const progress = { completed: childTodos.filter((todo) => todo.status === "completed").length, total: childTodos.length };
     return [{
       key: child ?? tool.callID,
       id: child ?? tool.callID,
       name: typeof tool.state.input.subagent_type === "string" ? tool.state.input.subagent_type : "subagent",
       label,
       active: active2,
+      progress,
       target: activityDetail(tool).target
     }];
   }).filter((agent, index, list) => list.findIndex((item) => item.key === agent.key) === index);
@@ -587,6 +590,7 @@ function SubagentCard(props) {
     return `${detail?.title ?? "Loading title\u2026"}
 ${stat}`;
   };
+  const progress = () => props.agent.progress?.total ? ` \xB7 ${props.agent.progress.completed}/${props.agent.progress.total}` : "";
   return _$createComponent(InfoCard, {
     get api() {
       return props.api;
@@ -595,7 +599,7 @@ ${stat}`;
       return `agent-${props.agent.id}`;
     },
     get title() {
-      return `${props.agent.name} \xB7 ${props.ended ? "Just ended" : props.agent.label}`;
+      return `${props.agent.name} \xB7 ${props.ended ? "Just ended" : props.agent.label}${progress()}`;
     },
     onActivate: () => navigateToSession(props.api, props.agent.id),
     get summary() {

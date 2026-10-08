@@ -24,9 +24,12 @@ The sidebar renders a collapsible InfoCard stack. The `Subagents · N runs` aggr
 rendered exactly once; each subagent appears as a single card (not a row plus a
 card) showing its session title, activity, todo, elapsed time, tool-call count,
 context used with percent of the model limit, and output Tok/s. A child that
-finished its turn stays visible with an **`Idle`** label (rather than
+finished its turn stays visible with a **`Done`** label (rather than
 disappearing), so the parent can see the subagent still exists and can be
-messaged again. Clicking a subagent card navigates to that subagent's session.
+messaged again. Each subagent card title also carries the child's todo progress
+as **`completed/total`** (e.g. `Frontend · Working · 3/5`), read reactively from
+the host sync store, so the parent can gauge progress without opening the child.
+Clicking a subagent card navigates to that subagent's session.
 The `app_bottom` line mirrors the aggregate when the sidebar is collapsed. Status
 segments are color-coded from the active theme: run (`accent`), done (`success`),
 err (`error`), total (`textMuted`).

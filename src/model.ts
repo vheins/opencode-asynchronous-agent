@@ -59,9 +59,11 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
     const status = child ? api.state.session.status(child) : undefined
     const waiting = child ? api.state.session.permission(child).length + api.state.session.question(child).length : 0
     const launching = tool.state.status === "running" || tool.state.status === "pending"
-    // A child that finished its turn reports `idle`; it is kept visible (labelled
-    // "Idle") so the parent can see the subagent still exists and can be messaged
-    // again, instead of it silently disappearing from the sidebar.
+    // `session.status()` only carries `busy`/`retry`; a finished child is removed
+    // from that map, so an absent status (or an explicit `idle`) means the child
+    // completed its turn. It is kept visible, labelled "Done", so the parent can
+    // see the subagent still exists and can be messaged again. The label matches
+    // the aggregate, which counts every non-active child as done.
     const active = waiting > 0 || (status ? status.type !== "idle" : launching)
     const label = waiting
       ? "Waiting for answer"
@@ -69,17 +71,21 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
         ? "Retrying"
         : status?.type === "busy"
           ? "Working"
-          : status?.type === "idle"
-            ? "Idle"
-            : launching
-              ? "Working"
-              : "Idle"
+          : launching
+            ? "Working"
+            : "Done"
+    // The child's own todo list is the most reliable progress signal: it is
+    // reactive in the host sync store (keyed by session), so the sidebar can show
+    // `completed/total` without fetching the child transcript.
+    const childTodos = child ? api.state.session.todo(child) : []
+    const progress = { completed: childTodos.filter((todo) => todo.status === "completed").length, total: childTodos.length }
     return [{
       key: child ?? tool.callID,
       id: child ?? tool.callID,
       name: typeof tool.state.input.subagent_type === "string" ? tool.state.input.subagent_type : "subagent",
       label,
       active,
+      progress,
       target: activityDetail(tool).target,
     }]
   }).filter((agent, index, list) => list.findIndex((item) => item.key === agent.key) === index)

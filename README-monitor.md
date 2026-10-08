@@ -70,7 +70,7 @@ Restart OpenCode after editing the file.
 The TUI plugin adds a sidebar section that shows:
 
 - running subagents
-- idle subagents (a child that finished its turn stays visible, labelled `Idle`, until it is messaged again)
+- finished subagents (a child that completed its turn stays visible, labelled `Done`, until it is messaged again)
 - recent completed subagents, with a manual completed history toggle for retained older completions
 - failed subagents
 - elapsed time

@@ -460,7 +460,8 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
     ].filter((part): part is string => Boolean(part)).join(" · ")
     return `${detail?.title ?? "Loading title…"}\n${stat}`
   }
-  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Just ended" : props.agent.label}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={summary()}>
+  const progress = () => props.agent.progress?.total ? ` · ${props.agent.progress.completed}/${props.agent.progress.total}` : ""
+  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Just ended" : props.agent.label}${progress()}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={summary()}>
     <Show when={props.agent.target}><text fg={theme().text} wrapMode="word">{props.agent.target}</text></Show>
     <Show when={error()}><text fg={theme().warning}>{error()}</text></Show>
     <Show when={data()}>{(detail) => <box gap={1}>
