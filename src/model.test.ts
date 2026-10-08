@@ -60,3 +60,41 @@ test("a child's todo progress is surfaced as completed/total", () => {
   const agents = sidebarActivity(fakeApi({ type: "busy" }, todos), "ses_parent").agents
   expect(agents[0].progress).toEqual({ completed: 2, total: 4 })
 })
+
+test("running agents are ordered before finished ones", () => {
+  const task = (callID: string, sessionId: string, subagent: string) => ({
+    id: callID,
+    type: "tool",
+    tool: "task",
+    callID,
+    state: {
+      status: "completed",
+      metadata: { sessionId, background: true },
+      input: { subagent_type: subagent, description: "Work" },
+      output: "",
+      title: "",
+      time: { start: 0, end: 10 },
+    },
+  })
+  const statuses: Record<string, { type: string } | undefined> = {
+    ses_done: { type: "idle" },
+    ses_live: { type: "busy" },
+  }
+  const parts = [task("call_done", "ses_done", "Done1"), task("call_live", "ses_live", "Live1"), task("call_done2", "ses_done2", "Done2")]
+  const api = {
+    state: {
+      session: {
+        messages: () => [{ id: "msg_1", role: "assistant" }],
+        status: (id: string) => statuses[id],
+        permission: () => [],
+        question: () => [],
+        todo: () => [],
+      },
+      part: () => parts,
+      mcp: () => [],
+    },
+  } as any
+  const agents = sidebarActivity(api, "ses_parent").agents
+  expect(agents.map((agent) => agent.name)).toEqual(["Live1", "Done1", "Done2"])
+  expect(agents[0].active).toBe(true)
+})

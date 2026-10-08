@@ -89,6 +89,9 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
       target: activityDetail(tool).target,
     }]
   }).filter((agent, index, list) => list.findIndex((item) => item.key === agent.key) === index)
+    // Running agents take priority in the sidebar: keep them above finished
+    // ones, preserving the original order within each group.
+    .sort((a, b) => Number(b.active) - Number(a.active))
   const todos = api.state.session.todo(id)
   return {
     mcp,

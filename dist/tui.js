@@ -74,7 +74,7 @@ function sidebarActivity(api, id) {
       progress,
       target: activityDetail(tool).target
     }];
-  }).filter((agent, index, list) => list.findIndex((item) => item.key === agent.key) === index);
+  }).filter((agent, index, list) => list.findIndex((item) => item.key === agent.key) === index).sort((a, b) => Number(b.active) - Number(a.active));
   const todos = api.state.session.todo(id);
   return {
     mcp,
@@ -549,7 +549,7 @@ function SubagentCard(props) {
   const theme = () => props.api.theme.current;
   createEffect(() => {
     const id = props.agent.id;
-    const ended = props.ended;
+    const ended2 = props.ended;
     const controller = new AbortController;
     let pending = false;
     setData(undefined);
@@ -572,21 +572,24 @@ function SubagentCard(props) {
       }
     };
     refresh();
-    const poll = ended || !props.agent.active ? undefined : setInterval(() => void refresh(), 5000);
+    const poll = ended2 || !props.agent.active ? undefined : setInterval(() => void refresh(), 5000);
     onCleanup(() => {
       controller.abort();
       clearInterval(poll);
     });
   });
-  const started = () => props.api.state.session.get(props.agent.id)?.time.created ?? data()?.started;
+  const session = () => props.api.state.session.get(props.agent.id);
+  const started = () => session()?.time.created ?? data()?.started;
+  const ended = () => props.ended ?? (props.agent.active ? undefined : session()?.time.updated);
   const elapsed = () => {
     const start = started();
-    return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, (props.ended ?? now()) - start) : 0;
+    const end = ended() ?? now();
+    return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, end - start) : 0;
   };
   const summary = () => {
     const detail = data();
     const seconds = elapsed() / 1000;
-    const stat = [elapsedLabel(started(), props.ended ?? now()), detail ? `${detail.toolCount} Tools` : "\u2026 Tools", detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined, detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined].filter((part) => Boolean(part)).join(" \xB7 ");
+    const stat = [elapsedLabel(started(), ended() ?? now()), detail ? `${detail.toolCount} Tools` : "\u2026 Tools", detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined, detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined].filter((part) => Boolean(part)).join(" \xB7 ");
     return `${detail?.title ?? "Loading title\u2026"}
 ${stat}`;
   };

@@ -442,10 +442,16 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
   })
   // Prefer the live session start; fall back to the fetched snapshot. Real start
   // is what lets the label tick from the child's true session creation time.
-  const started = () => props.api.state.session.get(props.agent.id)?.time.created ?? data()?.started
+  const session = () => props.api.state.session.get(props.agent.id)
+  const started = () => session()?.time.created ?? data()?.started
+  // A finished agent stays in the list (labelled "Done"), so `props.ended` is not
+  // set for it. Freeze the clock at the child's last activity time instead of
+  // letting it tick forever; only a live agent keeps advancing with `now()`.
+  const ended = () => props.ended ?? (props.agent.active ? undefined : session()?.time.updated)
   const elapsed = () => {
     const start = started()
-    return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, (props.ended ?? now()) - start) : 0
+    const end = ended() ?? now()
+    return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, end - start) : 0
   }
   // Session title replaces the provider/model line; the stat line carries Tools,
   // context used with percent of limit, and output tokens/sec next to elapsed.
@@ -453,7 +459,7 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
     const detail = data()
     const seconds = elapsed() / 1000
     const stat = [
-      elapsedLabel(started(), props.ended ?? now()),
+      elapsedLabel(started(), ended() ?? now()),
       detail ? `${detail.toolCount} Tools` : "… Tools",
       detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined,
       detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined,

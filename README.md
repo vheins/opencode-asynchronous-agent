@@ -29,7 +29,10 @@ disappearing), so the parent can see the subagent still exists and can be
 messaged again. Each subagent card title also carries the child's todo progress
 as **`completed/total`** (e.g. `Frontend · Working · 3/5`), read reactively from
 the host sync store, so the parent can gauge progress without opening the child.
-Clicking a subagent card navigates to that subagent's session.
+Running agents are listed **above** finished ones, so the live work stays at the
+top of the sidebar. A finished card freezes its elapsed time at the child's last
+activity instead of ticking forever. Clicking a subagent card navigates to that
+subagent's session.
 The `app_bottom` line mirrors the aggregate when the sidebar is collapsed. Status
 segments are color-coded from the active theme: run (`accent`), done (`success`),
 err (`error`), total (`textMuted`).
