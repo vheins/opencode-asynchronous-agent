@@ -23,11 +23,13 @@ Subagents · 3 runs
 The sidebar renders a collapsible InfoCard stack. The `Subagents · N runs` aggregate is
 rendered exactly once; each subagent appears as a single card (not a row plus a
 card) showing its session title, activity, todo, elapsed time, tool-call count,
-context used with percent of the model limit, and output Tok/s.
-Clicking a subagent card navigates to that subagent's session. The `app_bottom`
-line mirrors the aggregate when the sidebar is collapsed. Status segments are
-color-coded from the active theme: run (`accent`), done (`success`), err
-(`error`), total (`textMuted`).
+context used with percent of the model limit, and output Tok/s. A child that
+finished its turn stays visible with an **`Idle`** label (rather than
+disappearing), so the parent can see the subagent still exists and can be
+messaged again. Clicking a subagent card navigates to that subagent's session.
+The `app_bottom` line mirrors the aggregate when the sidebar is collapsed. Status
+segments are color-coded from the active theme: run (`accent`), done (`success`),
+err (`error`), total (`textMuted`).
 
 OpenCode V2 ships a keybind (`ctrl+b`, command `session.background`) that moves a
 *running* foreground subagent into background observation. This plugin gives you the
@@ -152,8 +154,23 @@ All configuration is optional and read from environment variables at setup time.
 | `OPENCODE_AUTO_BG_DEBUG` | *(off)* | Set to `1` to log each rewrite to stderr. |
 | `OPENCODE_SUBAGENT_NOTIFY` | *(enabled)* | TUI monitor only. Set to `0`, `false`, `off`, or `no` to disable the toast shown when a background subagent finishes (`done`/`error`). |
 | `OPENCODE_SUBAGENT_TASK_PROGRESS` | *(off)* | TUI monitor only. Set to a truthy value (`1`, `true`, `on`, …) to show the "Task progress" card. Hidden unless explicitly enabled. |
-| `OPENCODE_SUBAGENT_STATUS` | *(off)* | Opt-in. Set to a truthy value (`1`, `true`, `on`, `yes`) to register the `subagent_status` server tool. |
+| `OPENCODE_SUBAGENT_STATUS` | *(off)* | Opt-in. Set to a truthy value (`1`, `true`, `on`, `yes`) to register the `subagent_status` server tool. Also enables the control tools. |
 | `OPENCODE_SUBAGENT_STALE_MS` | `120000` | Age (ms) after which a still-running child is reported as `stale`. |
+| `OPENCODE_SUBAGENT_CONTROL` | *(off)* | Opt-in. Set to a truthy value to register the five control tools (`subagent_children`, `subagent_result`, `subagent_wait`, `subagent_cancel`, `subagent_send`). |
+| `OPENCODE_SUBAGENT_RESULT_CHARS` | `20000` | Cap for the text `subagent_result` returns. |
+| `OPENCODE_SUBAGENT_WAIT_MS` | `300000` | Default `subagent_wait` timeout (ms). |
+| `OPENCODE_SUBAGENT_POLL_MS` | `1000` | `subagent_wait` status-poll interval (ms). |
+| `OPENCODE_DB_CLEANUP` | *(enabled)* | Set to `0`, `false`, `no`, `off`, or `n` to disable database cleanup entirely. |
+| `OPENCODE_DB_CLEANUP_RETENTION_MS` | `259200000` (3 days) | Sessions untouched for longer than this have their `event` rows deleted and their old `part` tool payloads trimmed. |
+| `OPENCODE_DB_CLEANUP_INTERVAL_MS` | `21600000` (6 h) | Minimum spacing between cleanup runs. |
+| `OPENCODE_DB_CLEANUP_MAX_OUTPUT_CHARS` | `100000` | Write-time cap for a tool part's `state.output`. |
+| `OPENCODE_DB_CLEANUP_MAX_DIFF_CHARS` | `64000` | Write-time cap for edit `metadata.diff`. |
+| `OPENCODE_DB_CLEANUP_MAX_DISPLAY_CHARS` | `64000` | Write-time cap for read `metadata.display.text`. |
+| `OPENCODE_DB_CLEANUP_MAX_DIAGNOSTICS_CHARS` | `32000` | Write-time cap for `metadata.diagnostics` (emptied to `{}` when exceeded). |
+| `OPENCODE_DB_CLEANUP_PART_PREVIEW_CHARS` | `2000` | Length an old tool part's `state.output` is trimmed to during pruning. |
+| `OPENCODE_DB_CLEANUP_PART_BATCH` | `500` | Max `part` rows trimmed per cleanup run. |
+| `OPENCODE_DB_CLEANUP_VACUUM` | *(off)* | Set to `1` to `VACUUM` at shutdown after a run that deleted rows (reclaims file space; the DB ships with `auto_vacuum=0`). |
+| `OPENCODE_DB_CLEANUP_DEBUG` | *(off)* | Set to `1` to log cleanup decisions to stderr. |
 
 > **OpenCode V1 needs `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true`.** V1 gates
 > background subagents behind that flag (or the broader `OPENCODE_EXPERIMENTAL=true`).
@@ -190,8 +207,9 @@ export OPENCODE_AUTO_BG_SUBAGENT=0
 ```
 
 > The allowlist/denylist match the **parent** agent — the one calling the subagent
-> tool — because `execute.before`'s `event.agent` is the caller. The child's own agent
-> type is not known at call time.
+> tool. On V2 `execute.before` carries the caller directly; on V1, which does not,
+> the plugin learns the parent agent from the `chat.message` hook and remembers it
+> per session. The child's own agent type is not known at call time.
 
 ---
 
@@ -221,10 +239,101 @@ best-effort hydration call to `client.session.list()`; if that SDK method is
 unavailable it reports from events only and never fails.
 
 > **V1 only.** Custom tools and plugin event handlers are registered through the
-> V1 `server` entrypoint. The V2 plugin API cannot register either, so when the
-> tool is enabled on V2 the plugin logs a one-line stderr hint and continues. The
-> tool is non-destructive and disposed on unload; the background-forcing hook is
-> unaffected.
+> V1 `server` entrypoint. The V2 plugin API cannot register either, so on a
+> V2-only build the V2 entrypoint no-ops (the V1 `server` entrypoint still
+> registers the tool on a dual build). The tool is non-destructive and disposed
+> on unload; the background-forcing hook is unaffected.
+
+---
+
+## Subagent control tools (opt-in, V1 only)
+
+Background subagents are push-only: the parent is told when a child finishes, but
+it cannot list children, read a child's result on demand, join a set of children,
+cancel one, or steer a running one. Set `OPENCODE_SUBAGENT_CONTROL=1` (or
+`OPENCODE_SUBAGENT_STATUS=1`) to register five tools that close that gap on top of
+the public SDK:
+
+| Tool | Purpose |
+| --- | --- |
+| `subagent_children` | List a parent session's child subagent sessions with their current status. |
+| `subagent_result` | Fetch a child's final assistant answer (plus terminal error and finish reason), truncated to `OPENCODE_SUBAGENT_RESULT_CHARS`. |
+| `subagent_wait` | Block until the given children finish or a timeout elapses, then report each one's final status. Use to JOIN parallel subagents. |
+| `subagent_cancel` | Abort a running child (for example once a sibling already answered). |
+| `subagent_send` | Queue extra context into a child via the non-blocking async prompt endpoint. |
+
+`subagent_send` reads the child session's own `agent`, `model`, and model
+`variant` (reasoning effort) and passes them through with the prompt. OpenCode's
+prompt endpoint falls back to the *default* agent (and its model) whenever they
+are omitted, which silently rewrites a child's identity (a `Frontend` child
+becomes the default `orchestrator` on the default model). Preserving them keeps
+the child on its original agent/model/variant across every follow-up message.
+
+```sh
+export OPENCODE_SUBAGENT_CONTROL=1
+```
+
+Every tool is non-destructive and degrades gracefully: if the running OpenCode
+build lacks the underlying SDK method (`session.children`, `session.messages`,
+`session.status`, `session.abort`, `session.promptAsync`), the tool returns a
+short "unavailable" message instead of failing. `subagent_wait` polls on a
+bounded interval and gives up at its deadline rather than looping indefinitely.
+
+> **V1 only**, for the same reason as the status tool: the V2 plugin API cannot
+> register custom tools. On a V2-only build the V2 entrypoint no-ops; a dual
+> V1+V2 build registers the tools through the V1 `server` entrypoint.
+
+### Parent-agent filter on V1
+
+On V1 `tool.execute.before` does not receive the calling agent, so
+`OPENCODE_AUTO_BG_AGENTS` / `OPENCODE_AUTO_BG_EXCEPT` would otherwise have no
+effect. The plugin reads the agent from the `chat.message` hook (which does carry
+it) and remembers it per session, so the allow/deny lists work on V1 too.
+
+---
+
+## Database cleanup (V1, opt-out)
+
+OpenCode's session storage grows without bound. Two mechanisms cause it:
+
+1. **Event duplication.** Every part update is written twice — once as a durable
+   event row (`event` table) and once as a projection row (`part` table). The
+   model reads only the projection, so the `event` copy is pure duplication kept
+   for replay/sync.
+2. **Unbounded tool payloads.** `edit`/`write`/`read`/`bash` results are stored
+   verbatim in the `part` row, including large `metadata.diagnostics`,
+   `metadata.diff`, and `metadata.display.text` blobs.
+
+This plugin ships a cleanup layer that addresses both, in two parts:
+
+- **Write-time cap** (`tool.execute.after`): truncates oversized `state.output`,
+  `metadata.diff`, `metadata.filediff.patch`, and `metadata.display.text`, and
+  empties `metadata.diagnostics` when it exceeds its budget. This prevents new
+  bloat at the source. On real data a 117 KB edit metadata blob shrank to 6.5 KB.
+- **Periodic prune** (throttled `event` hook, every 6 h): for sessions untouched
+  beyond the retention window, deletes their `event` rows and trims old `part`
+  tool payloads to a short preview (setting `state.time.compacted` so the model
+  sees the existing `[Old tool result content cleared]` marker). It **never**
+  touches `event_sequence`, `session`, or `message` rows, so session resume and
+  compaction keep working.
+
+Cleanup is **enabled by default** and requires no configuration. Disable it with
+`OPENCODE_DB_CLEANUP=0`. It runs independently of the background-subagent flag
+and is **V1 only** — the V2 plugin API exposes no event or database access.
+
+> **Locking.** A plugin runs inside the same OpenCode process that owns the
+> database, and other sessions write to it concurrently. The live prune path uses
+> only a `wal_checkpoint(PASSIVE)` (never blocks); the blocking
+> `wal_checkpoint(TRUNCATE)` and optional `VACUUM` run at plugin shutdown, when
+> contention is gone. Running `TRUNCATE`/`VACUUM` while sessions are live makes
+> those sessions fail with `SQLiteError: database is locked`.
+
+> **Reclaiming space.** Deletes free pages inside the DB but do not shrink the
+> file when `auto_vacuum=0` (OpenCode's default). To reclaim file space, either
+> set `OPENCODE_DB_CLEANUP_VACUUM=1` (the `VACUUM` then runs at shutdown), or
+> reclaim the WAL manually with `PRAGMA wal_checkpoint(TRUNCATE)` while no session
+> is running. A multi-GB `-wal` file usually means a long-lived session is pinning
+> it; closing that session lets the next checkpoint truncate it.
 
 ---
 
@@ -262,6 +371,8 @@ unavailable it reports from events only and never fails.
 | `src/tui.tsx` | Source of the TUI sidebar plugin (InfoCard stack + per-subagent cards + async identity). |
 | `src/model.ts` | Sidebar data helpers: `activityDetail`, `sessionMetrics`, `sidebarActivity`. |
 | `src/subagent-status.js` | Opt-in `subagent_status` tool: in-memory child-session registry, staleness classification, event ingestion. |
+| `src/subagent-control.js` | Opt-in control tools: `subagent_children`/`result`/`wait`/`cancel`/`send` over the public SDK. |
+| `src/cleanup.js` | V1 database cleanup: write-time output/metadata capping, DB path resolution, stale-session event prune + old part trim, passive checkpoint inline + WAL truncate/VACUUM at shutdown. |
 | `src/subagent.ts` | Subagent detail fetch (`fetchSubagent`), summary (`subagentDetails`), duration (`elapsedLabel`). |
 | `src/workspace.ts` | Bounded Git workspace scan for the "Workspace & files" card. |
 | `dist/tui.js` | `./tui` entrypoint — the built TUI sidebar bundle (`bun run build`). |
