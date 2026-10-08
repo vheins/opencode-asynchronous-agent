@@ -123,6 +123,8 @@ function subagentTodoProgress(agents) {
   let completed = 0;
   let total = 0;
   for (const agent of agents) {
+    if (agent.active === false)
+      continue;
     running += agent.progress?.inProgress ?? 0;
     completed += agent.progress?.completed ?? 0;
     total += agent.progress?.total ?? 0;
@@ -1170,7 +1172,7 @@ function ProgressBars(props) {
   const theme = () => props.api.theme.current;
   const size = useTerminalDimensions();
   const width = () => Math.max(6, Math.min(30, (size().width || 40) - 8));
-  const frame = createClock(80);
+  const frame = createClock(180);
   const main = createMemo(() => mainTodoProgress(props.api.state.session.todo(props.id)));
   const subs = createMemo(() => subagentTodoProgress(sidebarActivity(props.api, props.id).agents));
   return (() => {

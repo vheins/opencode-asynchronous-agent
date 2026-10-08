@@ -157,18 +157,21 @@ export function mainTodoProgress(todos: ReadonlyArray<{ status: string }>) {
 }
 
 /**
- * Cumulative subagent todo progress across every child: completed over the sum
- * of all child todos, so the bar reports the same completed/total shape as the
- * main agent. `running` is retained for callers that want the in-progress count.
+ * Cumulative subagent todo progress across the children that are still active
+ * (running or waiting): completed over the sum of their todos, so the bar
+ * reports the same completed/total shape as the main agent. Finished children
+ * are excluded so a completed subagent stops inflating the total. `running` is
+ * retained for callers that want the in-progress count.
  *
- * @param {ReadonlyArray<{ progress?: { completed: number, inProgress: number, total: number } }>} agents
+ * @param {ReadonlyArray<{ active?: boolean, progress?: { completed: number, inProgress: number, total: number } }>} agents
  * @returns {{ running: number, completed: number, total: number, fraction: number }}
  */
-export function subagentTodoProgress(agents: ReadonlyArray<{ progress?: { completed: number, inProgress: number, total: number } }>) {
+export function subagentTodoProgress(agents: ReadonlyArray<{ active?: boolean, progress?: { completed: number, inProgress: number, total: number } }>) {
   let running = 0
   let completed = 0
   let total = 0
   for (const agent of agents) {
+    if (agent.active === false) continue
     running += agent.progress?.inProgress ?? 0
     completed += agent.progress?.completed ?? 0
     total += agent.progress?.total ?? 0

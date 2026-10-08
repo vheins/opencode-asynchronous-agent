@@ -125,11 +125,19 @@ test("mainTodoProgress reports completed over the session's own todos", () => {
   expect(mainTodoProgress([])).toEqual({ completed: 0, total: 0, fraction: 0 })
 })
 
-test("subagentTodoProgress sums completed over total across children", () => {
+test("subagentTodoProgress sums completed over total across active children", () => {
   const progress = subagentTodoProgress([
     { progress: { completed: 2, inProgress: 1, total: 4 } },
     { progress: { completed: 1, inProgress: 0, total: 2 } },
   ])
   expect(progress).toEqual({ running: 1, completed: 3, total: 6, fraction: 3 / 6 })
   expect(subagentTodoProgress([])).toEqual({ running: 0, completed: 0, total: 0, fraction: 0 })
+})
+
+test("subagentTodoProgress ignores finished children", () => {
+  const progress = subagentTodoProgress([
+    { active: true, progress: { completed: 1, inProgress: 1, total: 3 } },
+    { active: false, progress: { completed: 9, inProgress: 0, total: 9 } },
+  ])
+  expect(progress).toEqual({ running: 1, completed: 1, total: 3, fraction: 1 / 3 })
 })

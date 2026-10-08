@@ -647,7 +647,7 @@ export function ProgressBars(props: { api: TuiPluginApi; id: string }) {
   const theme = () => props.api.theme.current
   const size = useTerminalDimensions()
   const width = () => Math.max(6, Math.min(30, (size().width || 40) - 8))
-  const frame = createClock(80)
+  const frame = createClock(180)
   const main = createMemo(() => mainTodoProgress(props.api.state.session.todo(props.id)))
   const subs = createMemo(() => subagentTodoProgress(sidebarActivity(props.api, props.id).agents))
   return <box>
