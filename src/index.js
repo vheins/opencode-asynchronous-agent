@@ -42,21 +42,32 @@
  *                                           child is reported as stale.
  *
  * ── Subagent control tools (opt-in, V1 only) ────────────────────────────────
- * OpenCode's model is push-only, so the parent cannot join, inspect, cancel, or
- * steer background subagents. These tools close that gap via the public SDK:
+ * OpenCode's model is push-only, so the parent cannot inspect, cancel, or steer
+ * background subagents. These tools close that gap via the public SDK:
  *
  *   subagent_children  list a parent's child sessions
  *   subagent_result    fetch a child's final assistant answer
- *   subagent_wait      block until children finish or a timeout elapses
  *   subagent_cancel    abort a running child
  *   subagent_send      queue extra context into a child (non-blocking)
+ *
+ * There is no subagent_wait: OpenCode already pushes a completion notice when a
+ * child finishes, and a blocking wait is just polling in disguise.
  *
  *   OPENCODE_SUBAGENT_CONTROL=1             Register the control tools. Setting
  *                                           OPENCODE_SUBAGENT_STATUS=1 enables
  *                                           both suites.
  *   OPENCODE_SUBAGENT_RESULT_CHARS=20000    Cap for subagent_result output.
- *   OPENCODE_SUBAGENT_WAIT_MS=300000        Default subagent_wait timeout.
- *   OPENCODE_SUBAGENT_POLL_MS=1000          subagent_wait poll interval.
+ *
+ * ── Subagent progress reports (opt-in, V1 only) ─────────────────────────────
+ * A background child can publish progress to its parent as it works: on every
+ * `todo.updated` (i.e. each `todowrite`) the plugin injects a short synthetic
+ * report into the parent session. Reports are coalesced to at most one per child
+ * per interval, plus one final report when all todos are terminal. Event-driven,
+ * never polled.
+ *
+ *   OPENCODE_SUBAGENT_PROGRESS=1            Enable progress reports.
+ *   OPENCODE_SUBAGENT_PROGRESS_MS=120000    Min interval between reports per
+ *                                           child (default 120000).
  *
  * ── Database cleanup (opt-out, V1 only) ─────────────────────────────────────
  * OpenCode stores each session twice (projection tables + an event-sourcing
@@ -98,6 +109,7 @@
 
 import { createSubagentStatus, statusEnabled } from "./subagent-status.js"
 import { controlEnabled, createSubagentControl } from "./subagent-control.js"
+import { progressEnabled, createSubagentProgress } from "./subagent-progress.js"
 import { cleanupEnabled, createCleanup } from "./cleanup.js"
 
 /** Stable plugin identifier. */
@@ -203,8 +215,12 @@ export async function autoBackgroundPluginV1(ctx) {
   // sessions from plugin events and reports running/done/error/stale.
   const status = statusEnabled() ? createSubagentStatus({ client: ctx?.client, directory }) : undefined
 
-  // Opt-in control tools: list/result/wait/cancel/send for background children.
+  // Opt-in control tools: list/result/cancel/send for background children.
   const control = controlEnabled() ? createSubagentControl({ client: ctx?.client }) : undefined
+
+  // Opt-in progress reports: inject coalesced todo-based progress from a child
+  // into its parent as the child works (event-driven, never polled).
+  const progress = progressEnabled() ? createSubagentProgress({ client: ctx?.client }) : undefined
 
   // Database cleanup (opt-out): caps tool results at write time and prunes
   // old event/part rows on a throttled schedule.
@@ -214,7 +230,7 @@ export async function autoBackgroundPluginV1(ctx) {
     console.error(
       `[opencode-asynchronous-agent] V1 hook active (dir=${directory}, ` +
         `backgroundSupported=${supported}, statusTool=${Boolean(status)}, ` +
-        `controlTools=${Boolean(control)}, cleanup=${Boolean(cleanup)})`,
+        `controlTools=${Boolean(control)}, progress=${Boolean(progress)}, cleanup=${Boolean(cleanup)})`,
     )
   }
 
@@ -233,15 +249,15 @@ export async function autoBackgroundPluginV1(ctx) {
     }
   }
 
-  // The `event` hook fans out to every subscriber; compose status + cleanup.
-  const eventSubscribers = [status?.event, cleanup?.event].filter(Boolean)
+  // The `event` hook fans out to every subscriber; compose status + progress + cleanup.
+  const eventSubscribers = [status?.event, progress?.event, cleanup?.event].filter(Boolean)
   if (eventSubscribers.length > 0) {
     hooks.event = async (input) => {
       for (const subscriber of eventSubscribers) await subscriber(input)
     }
   }
 
-  const disposers = [status?.dispose, control?.dispose, cleanup?.dispose].filter(Boolean)
+  const disposers = [status?.dispose, control?.dispose, progress?.dispose, cleanup?.dispose].filter(Boolean)
   if (disposers.length > 0) {
     hooks.dispose = async () => {
       for (const dispose of disposers) await dispose()
@@ -252,6 +268,14 @@ export async function autoBackgroundPluginV1(ctx) {
   if (cleanup) {
     hooks["tool.execute.after"] = async (input, output) => {
       cleanup.cap(input, output)
+    }
+  }
+
+  // Inject a "keep todowrite current" instruction into child sessions only, so
+  // progress reports have an event stream to react to.
+  if (progress) {
+    hooks["experimental.chat.system.transform"] = async (input, output) => {
+      await progress.systemTransform(input, output)
     }
   }
 

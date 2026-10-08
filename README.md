@@ -156,10 +156,10 @@ All configuration is optional and read from environment variables at setup time.
 | `OPENCODE_SUBAGENT_TASK_PROGRESS` | *(off)* | TUI monitor only. Set to a truthy value (`1`, `true`, `on`, …) to show the "Task progress" card. Hidden unless explicitly enabled. |
 | `OPENCODE_SUBAGENT_STATUS` | *(off)* | Opt-in. Set to a truthy value (`1`, `true`, `on`, `yes`) to register the `subagent_status` server tool. Also enables the control tools. |
 | `OPENCODE_SUBAGENT_STALE_MS` | `120000` | Age (ms) after which a still-running child is reported as `stale`. |
-| `OPENCODE_SUBAGENT_CONTROL` | *(off)* | Opt-in. Set to a truthy value to register the five control tools (`subagent_children`, `subagent_result`, `subagent_wait`, `subagent_cancel`, `subagent_send`). |
+| `OPENCODE_SUBAGENT_CONTROL` | *(off)* | Opt-in. Set to a truthy value to register the four control tools (`subagent_children`, `subagent_result`, `subagent_cancel`, `subagent_send`). |
 | `OPENCODE_SUBAGENT_RESULT_CHARS` | `20000` | Cap for the text `subagent_result` returns. |
-| `OPENCODE_SUBAGENT_WAIT_MS` | `300000` | Default `subagent_wait` timeout (ms). |
-| `OPENCODE_SUBAGENT_POLL_MS` | `1000` | `subagent_wait` status-poll interval (ms). |
+| `OPENCODE_SUBAGENT_PROGRESS` | *(off)* | Opt-in. Set to a truthy value to stream a child's `todowrite` progress to its parent. |
+| `OPENCODE_SUBAGENT_PROGRESS_MS` | `120000` | Minimum interval (ms) between two progress reports for the same child. |
 | `OPENCODE_DB_CLEANUP` | *(enabled)* | Set to `0`, `false`, `no`, `off`, or `n` to disable database cleanup entirely. |
 | `OPENCODE_DB_CLEANUP_RETENTION_MS` | `259200000` (3 days) | Sessions untouched for longer than this have their `event` rows deleted and their old `part` tool payloads trimmed. |
 | `OPENCODE_DB_CLEANUP_INTERVAL_MS` | `21600000` (6 h) | Minimum spacing between cleanup runs. |
@@ -249,18 +249,21 @@ unavailable it reports from events only and never fails.
 ## Subagent control tools (opt-in, V1 only)
 
 Background subagents are push-only: the parent is told when a child finishes, but
-it cannot list children, read a child's result on demand, join a set of children,
-cancel one, or steer a running one. Set `OPENCODE_SUBAGENT_CONTROL=1` (or
-`OPENCODE_SUBAGENT_STATUS=1`) to register five tools that close that gap on top of
-the public SDK:
+it cannot list children, read a child's result on demand, cancel one, or steer a
+running one. Set `OPENCODE_SUBAGENT_CONTROL=1` (or `OPENCODE_SUBAGENT_STATUS=1`)
+to register four tools that close that gap on top of the public SDK:
 
 | Tool | Purpose |
 | --- | --- |
 | `subagent_children` | List a parent session's child subagent sessions with their current status. |
 | `subagent_result` | Fetch a child's final assistant answer (plus terminal error and finish reason), truncated to `OPENCODE_SUBAGENT_RESULT_CHARS`. |
-| `subagent_wait` | Block until the given children finish or a timeout elapses, then report each one's final status. Use to JOIN parallel subagents. |
 | `subagent_cancel` | Abort a running child (for example once a sibling already answered). |
 | `subagent_send` | Queue extra context into a child via the non-blocking async prompt endpoint. |
+
+There is deliberately no `subagent_wait`. Blocking on a child defeats the
+asynchronous model: OpenCode already pushes a completion notice to the parent
+when a child finishes, and `subagent_children` / `subagent_result` cover
+on-demand status. A wait tool is just polling in disguise.
 
 `subagent_send` reads the child session's own `agent`, `model`, and model
 `variant` (reasoning effort) and passes them through with the prompt. OpenCode's
@@ -276,8 +279,7 @@ export OPENCODE_SUBAGENT_CONTROL=1
 Every tool is non-destructive and degrades gracefully: if the running OpenCode
 build lacks the underlying SDK method (`session.children`, `session.messages`,
 `session.status`, `session.abort`, `session.promptAsync`), the tool returns a
-short "unavailable" message instead of failing. `subagent_wait` polls on a
-bounded interval and gives up at its deadline rather than looping indefinitely.
+short "unavailable" message instead of failing.
 
 > **V1 only**, for the same reason as the status tool: the V2 plugin API cannot
 > register custom tools. On a V2-only build the V2 entrypoint no-ops; a dual
@@ -289,6 +291,36 @@ On V1 `tool.execute.before` does not receive the calling agent, so
 `OPENCODE_AUTO_BG_AGENTS` / `OPENCODE_AUTO_BG_EXCEPT` would otherwise have no
 effect. The plugin reads the agent from the `chat.message` hook (which does carry
 it) and remembers it per session, so the allow/deny lists work on V1 too.
+
+---
+
+## Subagent progress reports (opt-in, V1 only)
+
+A background subagent runs with no visibility until it finishes. This feature
+gives the parent a live progress stream, driven entirely by events (never
+polling): whenever a child calls `todowrite`, OpenCode emits a `todo.updated`
+event, and the plugin injects a short report into the parent session via the
+async prompt endpoint, the same channel OpenCode uses for the completion notice.
+
+Because every report costs the parent a full model turn, reports are coalesced:
+
+- at most **one report per child per interval** (`OPENCODE_SUBAGENT_PROGRESS_MS`,
+  default 120 s), and
+- exactly **one final report** when every todo is `completed`/`cancelled`.
+
+A child that never calls `todowrite` produces no reports, so the plugin also
+appends a short instruction to each child's system prompt telling it to keep its
+todo list current (mark one item `in_progress`, then `completed` as it goes). The
+instruction is injected only into child sessions, never the parent or root.
+
+```sh
+export OPENCODE_SUBAGENT_PROGRESS=1
+```
+
+> **V1 only**, for the same reason as the control tools: the V2 plugin API cannot
+> register event handlers or system-prompt transforms. Loop-safe by construction:
+> only sessions with a parent are considered, so a parent's own `todowrite` never
+> re-triggers a report.
 
 ---
 
@@ -371,7 +403,8 @@ and is **V1 only** — the V2 plugin API exposes no event or database access.
 | `src/tui.tsx` | Source of the TUI sidebar plugin (InfoCard stack + per-subagent cards + async identity). |
 | `src/model.ts` | Sidebar data helpers: `activityDetail`, `sessionMetrics`, `sidebarActivity`. |
 | `src/subagent-status.js` | Opt-in `subagent_status` tool: in-memory child-session registry, staleness classification, event ingestion. |
-| `src/subagent-control.js` | Opt-in control tools: `subagent_children`/`result`/`wait`/`cancel`/`send` over the public SDK. |
+| `src/subagent-control.js` | Opt-in control tools: `subagent_children`/`result`/`cancel`/`send` over the public SDK. |
+| `src/subagent-progress.js` | Opt-in progress reports: watches child `todo.updated` events and injects coalesced reports into the parent; injects a keep-todos-current instruction into child system prompts. |
 | `src/cleanup.js` | V1 database cleanup: write-time output/metadata capping, DB path resolution, stale-session event prune + old part trim, passive checkpoint inline + WAL truncate/VACUUM at shutdown. |
 | `src/subagent.ts` | Subagent detail fetch (`fetchSubagent`), summary (`subagentDetails`), duration (`elapsedLabel`). |
 | `src/workspace.ts` | Bounded Git workspace scan for the "Workspace & files" card. |
