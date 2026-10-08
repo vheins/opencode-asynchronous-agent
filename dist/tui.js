@@ -60,14 +60,15 @@ function sidebarActivity(api, id) {
     const child = typeof metadata?.sessionId === "string" ? metadata.sessionId : undefined;
     const status = child ? api.state.session.status(child) : undefined;
     const waiting = child ? api.state.session.permission(child).length + api.state.session.question(child).length : 0;
-    const running = status ? status.type !== "idle" : tool.state.status === "running" || tool.state.status === "pending";
-    if (!running && !waiting)
-      return [];
+    const launching = tool.state.status === "running" || tool.state.status === "pending";
+    const active2 = waiting > 0 || (status ? status.type !== "idle" : launching);
+    const label = waiting ? "Waiting for answer" : status?.type === "retry" ? "Retrying" : status?.type === "busy" ? "Working" : status?.type === "idle" ? "Idle" : launching ? "Working" : "Idle";
     return [{
-      key: tool.callID,
+      key: child ?? tool.callID,
       id: child ?? tool.callID,
       name: typeof tool.state.input.subagent_type === "string" ? tool.state.input.subagent_type : "subagent",
-      label: waiting ? "Waiting for answer" : status?.type === "retry" ? "Retrying" : "Working",
+      label,
+      active: active2,
       target: activityDetail(tool).target
     }];
   }).filter((agent, index, list) => list.findIndex((item) => item.key === agent.key) === index);
@@ -384,7 +385,7 @@ function activityKind(status) {
 }
 function asyncIdentity(api, id) {
   const tools = api.state.session.messages(id).flatMap((message) => api.state.part(message.id)).filter((part) => part.type === "tool").filter((part) => part.tool === "task" || part.tool === "subagent");
-  const live = new Set(sidebarActivity(api, id).agents.map((agent) => agent.id));
+  const live = new Set(sidebarActivity(api, id).agents.filter((agent) => agent.active).map((agent) => agent.id));
   const rows = tools.map((part) => {
     const child = part.state.status === "pending" ? undefined : typeof part.state.metadata?.sessionId === "string" ? part.state.metadata.sessionId : undefined;
     const key = child ?? part.callID;
@@ -568,7 +569,7 @@ function SubagentCard(props) {
       }
     };
     refresh();
-    const poll = ended ? undefined : setInterval(() => void refresh(), 5000);
+    const poll = ended || !props.agent.active ? undefined : setInterval(() => void refresh(), 5000);
     onCleanup(() => {
       controller.abort();
       clearInterval(poll);
@@ -893,7 +894,7 @@ function CreatureCard(props) {
       })));
   });
   const cells = createMemo(() => {
-    const live = new Set(activity().agents.map((agent) => agent.name));
+    const live = new Set(activity().agents.filter((agent) => agent.active).map((agent) => agent.name));
     return [{
       key: `main:${props.id}`,
       name: main().agent ?? "Main",
@@ -1039,7 +1040,7 @@ function waitingReason(api, id, activity) {
     return "Waiting for your choice / answer";
   if (activity.status?.type === "retry")
     return "Waiting for model retry";
-  if (activity.current?.tool === "task" || activity.current?.tool === "subagent" || !activity.current && activity.agents.length)
+  if (activity.current?.tool === "task" || activity.current?.tool === "subagent" || !activity.current && activity.agents.some((agent) => agent.active))
     return "Waiting for subagent results";
   if (activity.current)
     return `${activity.current.state.status === "pending" ? "Queued" : "Waiting for result"} \xB7 ${activityDetail(activity.current).action}`;

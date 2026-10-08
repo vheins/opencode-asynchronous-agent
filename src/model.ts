@@ -58,13 +58,28 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
     const child = typeof metadata?.sessionId === "string" ? metadata.sessionId : undefined
     const status = child ? api.state.session.status(child) : undefined
     const waiting = child ? api.state.session.permission(child).length + api.state.session.question(child).length : 0
-    const running = status ? status.type !== "idle" : tool.state.status === "running" || tool.state.status === "pending"
-    if (!running && !waiting) return []
+    const launching = tool.state.status === "running" || tool.state.status === "pending"
+    // A child that finished its turn reports `idle`; it is kept visible (labelled
+    // "Idle") so the parent can see the subagent still exists and can be messaged
+    // again, instead of it silently disappearing from the sidebar.
+    const active = waiting > 0 || (status ? status.type !== "idle" : launching)
+    const label = waiting
+      ? "Waiting for answer"
+      : status?.type === "retry"
+        ? "Retrying"
+        : status?.type === "busy"
+          ? "Working"
+          : status?.type === "idle"
+            ? "Idle"
+            : launching
+              ? "Working"
+              : "Idle"
     return [{
-      key: tool.callID,
+      key: child ?? tool.callID,
       id: child ?? tool.callID,
       name: typeof tool.state.input.subagent_type === "string" ? tool.state.input.subagent_type : "subagent",
-      label: waiting ? "Waiting for answer" : status?.type === "retry" ? "Retrying" : "Working",
+      label,
+      active,
       target: activityDetail(tool).target,
     }]
   }).filter((agent, index, list) => list.findIndex((item) => item.key === agent.key) === index)

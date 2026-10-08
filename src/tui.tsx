@@ -323,7 +323,7 @@ function asyncIdentity(api: TuiPluginApi, id: string) {
     .flatMap((message) => api.state.part(message.id))
     .filter((part): part is ToolPart => part.type === "tool")
     .filter((part) => part.tool === "task" || part.tool === "subagent")
-  const live = new Set(sidebarActivity(api, id).agents.map((agent) => agent.id))
+  const live = new Set(sidebarActivity(api, id).agents.filter((agent) => agent.active).map((agent) => agent.id))
   const rows: { id: string; status: SubagentStatus }[] = tools.map((part) => {
     const child = part.state.status === "pending" ? undefined : typeof part.state.metadata?.sessionId === "string" ? part.state.metadata.sessionId : undefined
     const key = child ?? part.callID
@@ -435,7 +435,9 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
       finally { pending = false }
     }
     void refresh()
-    const poll = ended ? undefined : setInterval(() => void refresh(), 5000)
+    // Poll only while the child is live; an idle child's snapshot is stable, and
+    // the effect re-runs (restarting the poll) when it becomes active again.
+    const poll = ended || !props.agent.active ? undefined : setInterval(() => void refresh(), 5000)
     onCleanup(() => { controller.abort(); clearInterval(poll) })
   })
   // Prefer the live session start; fall back to the fetched snapshot. Real start
@@ -556,7 +558,7 @@ export function CreatureCard(props: { api: TuiPluginApi; id: string }) {
     if (changed) setAgents([...seen].map(([name, value]) => ({ name, session: value.session })))
   })
   const cells = createMemo<CreatureCell[]>(() => {
-    const live = new Set(activity().agents.map((agent) => agent.name))
+    const live = new Set(activity().agents.filter((agent) => agent.active).map((agent) => agent.name))
     return [
       { key: `main:${props.id}`, name: main().agent ?? "Main", count: main().count, working: mainWorking() },
       ...agents().map((agent) => ({ key: `agent:${agent.name}`, name: agent.name, count: sessionMetrics(props.api, agent.session).count, working: live.has(agent.name) })),
@@ -596,7 +598,7 @@ export function waitingReason(api: TuiPluginApi, id: string, activity: ReturnTyp
   if (api.state.session.permission(id).length) return "Waiting for your permission"
   if (api.state.session.question(id).length) return "Waiting for your choice / answer"
   if (activity.status?.type === "retry") return "Waiting for model retry"
-  if (activity.current?.tool === "task" || activity.current?.tool === "subagent" || (!activity.current && activity.agents.length)) return "Waiting for subagent results"
+  if (activity.current?.tool === "task" || activity.current?.tool === "subagent" || (!activity.current && activity.agents.some((agent) => agent.active))) return "Waiting for subagent results"
   if (activity.current) return `${activity.current.state.status === "pending" ? "Queued" : "Waiting for result"} · ${activityDetail(activity.current).action}`
   if (activity.status?.type === "busy") return "Waiting for model response"
   return ""
