@@ -3,16 +3,18 @@ import {
   PROGRESS_SYSTEM_INSTRUCTION,
   createSubagentProgress,
   formatProgressReport,
+  formatProgressToast,
   isTerminalTodo,
   progressEnabled,
   progressIntervalMs,
+  progressMode,
   shouldReport,
   summarizeTodos,
 } from "./subagent-progress.js"
 
-/** Fake SDK client capturing promptAsync calls and returning canned session info. */
+/** Fake SDK client capturing promptAsync/showToast calls and returning canned session info. */
 function fakeClient(overrides = {}) {
-  const calls = { promptAsync: [], get: [] }
+  const calls = { promptAsync: [], get: [], showToast: [] }
   const sessions = overrides.sessions ?? {}
   const client = {
     session: {
@@ -23,6 +25,12 @@ function fakeClient(overrides = {}) {
       promptAsync: async (input) => {
         calls.promptAsync.push(input)
         return { data: undefined }
+      },
+    },
+    tui: {
+      showToast: async (input) => {
+        calls.showToast.push(input)
+        return { data: true }
       },
     },
   }
@@ -41,8 +49,26 @@ test("progressEnabled reads the env gate", () => {
   expect(progressEnabled()).toBe(false)
   process.env.OPENCODE_SUBAGENT_PROGRESS = "1"
   expect(progressEnabled()).toBe(true)
-  process.env.OPENCODE_SUBAGENT_PROGRESS = "no"
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "0"
+  expect(progressEnabled()).toBe(true)
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "maybe"
   expect(progressEnabled()).toBe(false)
+  if (prev === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  else process.env.OPENCODE_SUBAGENT_PROGRESS = prev
+})
+
+test("progressMode maps truthy to inject, falsy to toast, else off", () => {
+  const prev = process.env.OPENCODE_SUBAGENT_PROGRESS
+  delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  expect(progressMode()).toBe("off")
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "true"
+  expect(progressMode()).toBe("inject")
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "0"
+  expect(progressMode()).toBe("toast")
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "off"
+  expect(progressMode()).toBe("toast")
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "nah"
+  expect(progressMode()).toBe("off")
   if (prev === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS
   else process.env.OPENCODE_SUBAGENT_PROGRESS = prev
 })
@@ -95,6 +121,19 @@ test("formatProgressReport omits the nickname when the slug is unknown", () => {
   expect(text).toContain("⤷ frontend · reporting to orchestrator")
 })
 
+test("formatProgressToast puts identity in the title and the active todo in the message", () => {
+  const toast = formatProgressToast({ sessionID: "ses_child", agent: "frontend", nickname: "hidden-panda", title: "Build checkout UI", todos: TODOS })
+  expect(toast.title).toBe("⤷ frontend · hidden-panda · Build checkout UI")
+  expect(toast.message).toBe("b")
+  expect(toast.variant).toBe("info")
+})
+
+test("formatProgressToast falls back to counts when no todo is in progress", () => {
+  const toast = formatProgressToast({ sessionID: "ses_child", agent: "frontend", todos: [{ content: "a", status: "completed" }] })
+  expect(toast.title).toBe("⤷ frontend")
+  expect(toast.message).toContain("1/1 done")
+})
+
 test("shouldReport sends final once, coalesces non-final by interval", () => {
   const summary = { terminal: false, text: "1/3 done" }
   expect(shouldReport(undefined, summary, 1000, 120000)).toBe(true)
@@ -133,6 +172,24 @@ test("resolves the child slug lazily via session.get when no event was seen", as
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
   expect(calls.promptAsync.length).toBe(1)
   expect(calls.promptAsync[0].body.parts[0].text).toContain("backend · mighty-island · reporting to ses_parent")
+})
+
+test("toast mode shows a toast instead of injecting a prompt", async () => {
+  const { client, calls } = fakeClient({
+    sessions: {
+      ses_parent: { id: "ses_parent", agent: "orchestrator" },
+      ses_child: { id: "ses_child", parentID: "ses_parent", agent: "frontend", slug: "hidden-panda", title: "Build checkout UI" },
+    },
+  })
+  const progress = createSubagentProgress({ client, now: () => 1000, intervalMs: 120000, mode: "toast" })
+  await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_child", parentID: "ses_parent", agent: "frontend", slug: "hidden-panda", title: "Build checkout UI" } } } })
+  await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
+  expect(calls.promptAsync.length).toBe(0)
+  expect(calls.showToast.length).toBe(1)
+  const body = calls.showToast[0].body
+  expect(body.title).toBe("⤷ frontend · hidden-panda · Build checkout UI")
+  expect(body.message).toBe("b")
+  expect(body.variant).toBe("info")
 })
 
 test("does not inject for a root session (no parent)", async () => {

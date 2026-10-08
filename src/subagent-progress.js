@@ -25,7 +25,17 @@
  * Loop safety: only sessions that have a parent (i.e. child sessions) are
  * considered, so the parent's own `todowrite` never re-triggers a report.
  *
- * Opt-in via `OPENCODE_SUBAGENT_PROGRESS=1` (or `true` / `on` / `yes`).
+ * Two delivery modes, selected by `OPENCODE_SUBAGENT_PROGRESS`:
+ *
+ *   - `1` / `true` / `on` / `yes` → **inject**: the report is written into the
+ *     parent session as a text part (a full model turn; visible in the
+ *     transcript).
+ *   - `0` → **toast**: the report is shown as a transient TUI toast instead, so
+ *     no model turn is spent and the parent transcript stays clean. The toast
+ *     title carries the child's identity (`agent · slug · session title`) and
+ *     the message carries the `in_progress` todo title.
+ *
+ * Any other value leaves progress reporting off.
  *
  * @module subagent-progress
  */
@@ -60,13 +70,32 @@ export const PROGRESS_SYSTEM_INSTRUCTION = [
 /** Values accepted as "enabled" for the opt-in env gate. */
 const TRUTHY = new Set(["1", "true", "yes", "on", "y"])
 
+/** Values accepted as the explicit "toast" mode. */
+const FALSY = new Set(["0", "false", "no", "off", "n"])
+
 /**
- * Whether progress reporting is enabled via `OPENCODE_SUBAGENT_PROGRESS`.
+ * Resolve the progress delivery mode from `OPENCODE_SUBAGENT_PROGRESS`:
+ *
+ *   - `"inject"` — truthy value: write the report into the parent session.
+ *   - `"toast"`  — `0` / `false` / `no` / `off`: show a transient TUI toast.
+ *   - `"off"`    — unset or unrecognized: progress reporting disabled.
+ *
+ * @returns {"inject" | "toast" | "off"}
+ */
+export function progressMode() {
+  const value = String(process.env.OPENCODE_SUBAGENT_PROGRESS ?? "").trim().toLowerCase()
+  if (TRUTHY.has(value)) return "inject"
+  if (FALSY.has(value)) return "toast"
+  return "off"
+}
+
+/**
+ * Whether progress reporting is active in either mode (inject or toast).
  *
  * @returns {boolean}
  */
 export function progressEnabled() {
-  return TRUTHY.has(String(process.env.OPENCODE_SUBAGENT_PROGRESS ?? "").trim().toLowerCase())
+  return progressMode() !== "off"
 }
 
 /**
@@ -141,6 +170,24 @@ export function formatProgressReport(input) {
 }
 
 /**
+ * Render the TUI toast for a progress report (the `OPENCODE_SUBAGENT_PROGRESS=0`
+ * mode). The title carries the child's identity — agent, session slug
+ * ("nickname"), and the session title — and the message is the title of the
+ * `in_progress` todo (falling back to the compact counts when none is active).
+ *
+ * @param {{ sessionID: string, agent?: string, nickname?: string, title?: string, todos?: Array<object> }} input
+ * @returns {{ title: string, message: string, variant: "info" }}
+ */
+export function formatProgressToast(input) {
+  const reporter = input?.agent || input?.sessionID || "subagent"
+  const nickname = input?.nickname ? ` · ${input.nickname}` : ""
+  const title = input?.title ? ` · ${input.title}` : ""
+  const active = (Array.isArray(input?.todos) ? input.todos : []).find((todo) => todo?.status === "in_progress")
+  const message = active?.content ? String(active.content) : summarizeTodos(input?.todos).text
+  return { title: `⤷ ${reporter}${nickname}${title}`, message, variant: "info" }
+}
+
+/**
  * Decide whether a report should be sent for a child, given its per-child state.
  *
  * A final report (all todos terminal) is sent at most once. A non-final report is
@@ -179,18 +226,21 @@ export function createSubagentProgress(options = {}) {
   const client = options.client
   const now = options.now ?? (() => Date.now())
   const intervalMs = options.intervalMs ?? progressIntervalMs()
+  const mode = options.mode ?? progressMode()
   const onError = options.onError
   const states = new Map()
   const parents = new Map()
   const roots = new Set()
   const agents = new Map()
   const slugs = new Map()
+  const titles = new Map()
 
   /** Record child -> parent linkage (or mark a session as a root) from info. */
   function rememberParent(info) {
     if (!info || typeof info.id !== "string") return
     if (typeof info.agent === "string" && info.agent) agents.set(info.id, info.agent)
     if (typeof info.slug === "string" && info.slug) slugs.set(info.id, info.slug)
+    if (typeof info.title === "string" && info.title) titles.set(info.id, info.title)
     if (typeof info.parentID === "string" && info.parentID) {
       parents.set(info.id, info.parentID)
       roots.delete(info.id)
@@ -283,6 +333,32 @@ export function createSubagentProgress(options = {}) {
     }
   }
 
+  /** Read a session's title from the registry, then the SDK (best-effort). */
+  async function titleOf(sessionID) {
+    if (titles.has(sessionID)) return titles.get(sessionID)
+    const api = client?.session
+    if (typeof api?.get !== "function") return undefined
+    try {
+      const response = await api.get({ path: { id: sessionID } })
+      const info = response && typeof response === "object" && "data" in response ? response.data : response
+      rememberParent(info)
+      return titles.get(sessionID)
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Best-effort TUI toast for one report. Non-blocking: a missing `tui` API is
+   * silently ignored so the event handler never throws.
+   */
+  async function toast(input) {
+    const api = client?.tui
+    if (typeof api?.showToast !== "function") return false
+    await api.showToast({ body: { title: input.title, message: input.message, variant: input.variant, duration: 5000 } })
+    return true
+  }
+
   /** Handle one plugin event. */
   async function event(input) {
     const evt = input?.event
@@ -309,11 +385,18 @@ export function createSubagentProgress(options = {}) {
 
     const agent = agents.get(sessionID) ?? (await agentOf(sessionID))
     const nickname = await slugOf(sessionID)
-    const parentAgent = agents.get(parentID)
-    const text = formatProgressReport({ sessionID, agent, nickname, parentAgent, parentID, title: props.title, todos })
     try {
-      const sent = await inject(parentID, text)
-      if (!sent) return
+      if (mode === "toast") {
+        const title = await titleOf(sessionID)
+        const payload = formatProgressToast({ sessionID, agent, nickname, title, todos })
+        const sent = await toast(payload)
+        if (!sent) return
+      } else {
+        const parentAgent = agents.get(parentID)
+        const text = formatProgressReport({ sessionID, agent, nickname, parentAgent, parentID, title: props.title, todos })
+        const sent = await inject(parentID, text)
+        if (!sent) return
+      }
     } catch (error) {
       onError?.(error)
       return
@@ -335,6 +418,7 @@ export function createSubagentProgress(options = {}) {
       roots.clear()
       agents.clear()
       slugs.clear()
+      titles.clear()
     },
   }
 }

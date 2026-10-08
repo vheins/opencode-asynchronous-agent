@@ -10,9 +10,9 @@ Works on **both** OpenCode V1 (`>=1.18.0`) and V2 (`>=2.0.0`):
 - **`./tui`** — the sidebar monitor: a Saffteen-style collapsible InfoCard stack
   (activity/result, provider token report, task progress, workspace) plus
   per-subagent cards (title, activity, todo, elapsed time, Tools count, context
-  used with percent, and Tok/s). The async-agent identity
+  used with percent). The async-agent identity
   is preserved: running/done/error/total counts, per-subagent elapsed time,
-  **total tokens + tokens/sec**, and a compact one-line status bar when the
+  **total tokens**, and a compact one-line status bar when the
   sidebar is collapsed.
 
 ```
@@ -23,7 +23,7 @@ Subagents · 3 runs
 The sidebar renders a collapsible InfoCard stack. The `Subagents · N runs` aggregate is
 rendered exactly once; each subagent appears as a single card (not a row plus a
 card) showing its session title, activity, todo, elapsed time, tool-call count,
-context used with percent of the model limit, and output Tok/s. A child that
+and context used with percent of the model limit. A child that
 finished its turn stays visible with a **`Done`** label (rather than
 disappearing), so the parent can see the subagent still exists and can be
 messaged again. Each subagent card title also carries the child's todo progress
@@ -171,7 +171,7 @@ All configuration is optional and read from environment variables at setup time.
 | `OPENCODE_SUBAGENT_STALE_MS` | `120000` | Age (ms) after which a still-running child is reported as `stale`. |
 | `OPENCODE_SUBAGENT_CONTROL` | *(off)* | Opt-in. Set to a truthy value to register the four control tools (`subagent_children`, `subagent_result`, `subagent_cancel`, `subagent_send`). |
 | `OPENCODE_SUBAGENT_RESULT_CHARS` | `20000` | Cap for the text `subagent_result` returns. |
-| `OPENCODE_SUBAGENT_PROGRESS` | *(off)* | Opt-in. Set to a truthy value to stream a child's `todowrite` progress to its parent. |
+| `OPENCODE_SUBAGENT_PROGRESS` | *(off)* | Progress-report mode. Truthy (`1`/`true`/`on`/`yes`) injects the report into the parent session as a text part; `0`/`false`/`no`/`off` shows a transient TUI toast instead (no model turn). Unset/other values disable it. |
 | `OPENCODE_SUBAGENT_PROGRESS_MS` | `120000` | Minimum interval (ms) between two progress reports for the same child. |
 | `OPENCODE_DB_CLEANUP` | *(enabled)* | Set to `0`, `false`, `no`, `off`, or `n` to disable database cleanup entirely. |
 | `OPENCODE_DB_CLEANUP_RETENTION_MS` | `259200000` (3 days) | Sessions untouched for longer than this have their `event` rows deleted and their old `part` tool payloads trimmed. |
@@ -313,10 +313,24 @@ it) and remembers it per session, so the allow/deny lists work on V1 too.
 A background subagent runs with no visibility until it finishes. This feature
 gives the parent a live progress stream, driven entirely by events (never
 polling): whenever a child calls `todowrite`, OpenCode emits a `todo.updated`
-event, and the plugin injects a short report into the parent session via the
-async prompt endpoint, the same channel OpenCode uses for the completion notice.
+event, and the plugin reports it to the parent.
 
-Because every report costs the parent a full model turn, reports are coalesced:
+Two delivery modes, chosen by `OPENCODE_SUBAGENT_PROGRESS`:
+
+- **Inject** (truthy: `1`/`true`/`on`/`yes`) — the report is written into the
+  parent session via the async prompt endpoint, the same channel OpenCode uses
+  for the completion notice. It is a **visible** text part (not synthetic), so it
+  renders inline in the parent's transcript, headed by an arrow icon, the
+  reporting child agent, the child's session slug (its "nickname"), and the
+  recipient parent, mirroring a tool-call row. Every injection costs the parent a
+  full model turn.
+- **Toast** (`0`/`false`/`no`/`off`) — the report is shown as a transient TUI
+  toast instead, so **no model turn is spent** and the parent transcript stays
+  clean. The toast title carries the child's identity (`agent · slug · session
+  title`) and the message is the title of the `in_progress` todo.
+
+Because every injected report costs the parent a full model turn, reports are
+coalesced:
 
 - at most **one report per child per interval** (`OPENCODE_SUBAGENT_PROGRESS_MS`,
   default 120 s), and
@@ -327,10 +341,7 @@ appends a short instruction to each child's system prompt telling it to keep its
 todo list current (mark one item `in_progress`, then `completed` as it goes). The
 instruction is injected only into child sessions, never the parent or root.
 
-Reports are injected as **visible** text parts (not synthetic), so they render
-inline in the parent's transcript, headed by an arrow icon, the reporting child
-agent, the child's session slug (its "nickname"), and the recipient parent,
-mirroring a tool-call row:
+Injected report shape:
 
 ```text
 ⤷ frontend · hidden-panda · reporting to orchestrator · "Build checkout UI" — 1/3 done · 1 in_progress · 1 pending
@@ -339,8 +350,16 @@ mirroring a tool-call row:
   - [pending] Wire API
 ```
 
+Toast mode (`title` / `message`):
+
+```text
+⤷ frontend · hidden-panda · Build checkout UI
+Build form
+```
+
 ```sh
-export OPENCODE_SUBAGENT_PROGRESS=1
+export OPENCODE_SUBAGENT_PROGRESS=1   # inject into the parent transcript
+export OPENCODE_SUBAGENT_PROGRESS=0   # show a TUI toast instead
 ```
 
 > **V1 only**, for the same reason as the control tools: the V2 plugin API cannot

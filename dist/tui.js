@@ -673,8 +673,7 @@ function SubagentCard(props) {
   const summaryTitle = () => data()?.title ?? "Loading title\u2026";
   const summary = () => {
     const detail = data();
-    const seconds = elapsed() / 1000;
-    return [detail ? `${detail.toolCount} Tools` : "\u2026 Tools", elapsedLabel(started(), ended() ?? now()), detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined, detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined].filter((part) => Boolean(part)).join(" \xB7 ");
+    return [detail ? `${detail.toolCount} Tools` : "\u2026 Tools", elapsedLabel(started(), ended() ?? now()), detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined].filter((part) => Boolean(part)).join(" \xB7 ");
   };
   const progress = () => props.agent.progress?.total ? ` \xB7 ${props.agent.progress.completed}/${props.agent.progress.total}` : "";
   return _$createComponent(InfoCard, {

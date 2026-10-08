@@ -464,17 +464,15 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
     return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, end - start) : 0
   }
   // Session title replaces the provider/model line and is clipped to one line;
-  // the stat line leads with Tools, then elapsed, context used with percent of
-  // limit, and output tokens/sec.
+  // the stat line leads with Tools, then elapsed, then context used with percent
+  // of the model limit.
   const summaryTitle = () => data()?.title ?? "Loading title…"
   const summary = () => {
     const detail = data()
-    const seconds = elapsed() / 1000
     return [
       detail ? `${detail.toolCount} Tools` : "… Tools",
       elapsedLabel(started(), ended() ?? now()),
       detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined,
-      detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined,
     ].filter((part): part is string => Boolean(part)).join(" · ")
   }
   const progress = () => props.agent.progress?.total ? ` · ${props.agent.progress.completed}/${props.agent.progress.total}` : ""
