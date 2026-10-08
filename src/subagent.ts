@@ -15,13 +15,27 @@ export function subagentModel(session: Session | undefined, messages: ReadonlyAr
   return { providerID, modelID }
 }
 
+/** Token usage of the newest assistant message that actually reports any, if present. */
+function latestReportedTokens(messages: ReadonlyArray<Message>) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    if (message.role !== "assistant") continue
+    const { input, output, reasoning, cache } = message.tokens
+    if ([input, output, reasoning, cache.read, cache.write].some((value) => Number.isFinite(value) && value > 0)) return message.tokens
+  }
+  return undefined
+}
+
 export function subagentDetails(session: Session | undefined, messages: { info: Message; parts: Part[] }[], todos: Todo[], limit?: number) {
   const infos = messages.map((entry) => entry.info)
   const assistant = latestAssistant(infos)
   const tools = messages.flatMap((entry) => entry.parts.filter((part) => part.type === "tool"))
   const current = [...tools].reverse().find((part) => part.state.status === "running" || part.state.status === "pending")
   const latest = current ?? tools.at(-1)
-  const usage = assistant?.tokens
+  // The newest assistant message is often mid-step with `tokens = 0`, so read
+  // usage from the newest message that actually reports tokens; otherwise a live
+  // subagent would show no context/token line until it finishes.
+  const usage = latestReportedTokens(infos)
   const used = usage ? [usage.input, usage.output, usage.reasoning, usage.cache.read, usage.cache.write].reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0) : 0
   const { providerID, modelID } = subagentModel(session, infos)
   return {

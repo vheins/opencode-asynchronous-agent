@@ -58,7 +58,7 @@ test("a child's todo progress is surfaced as completed/total", () => {
     { status: "pending" },
   ]
   const agents = sidebarActivity(fakeApi({ type: "busy" }, todos), "ses_parent").agents
-  expect(agents[0].progress).toEqual({ completed: 2, total: 4 })
+  expect(agents[0].progress).toEqual({ completed: 2, inProgress: 1, total: 4 })
 })
 
 test("running agents are ordered before finished ones", () => {

@@ -2,7 +2,7 @@ import type { TuiPluginApi, TuiPluginModule, TuiThemeCurrent } from "@opencode-a
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type Accessor, type JSX } from "solid-js"
-import { activityDetail, sessionMetrics, sidebarActivity } from "./model"
+import { activityDetail, mainTodoProgress, renderBar, sessionMetrics, sidebarActivity, subagentTodoProgress } from "./model"
 import { elapsedLabel, fetchSubagent } from "./subagent"
 import { inspectWorkspace } from "./workspace"
 
@@ -118,6 +118,15 @@ function createClock(interval = 1000) {
   const timer = setInterval(() => setNow(Date.now()), interval)
   onCleanup(() => clearInterval(timer))
   return now
+}
+
+/** Formats a timestamp as a compact `Mon 08 Oct · 14:05:32` clock label. */
+export function clockLabel(time: number) {
+  const date = new Date(time)
+  const day = date.toLocaleDateString("en", { weekday: "short" })
+  const rest = date.toLocaleDateString("en", { day: "2-digit", month: "short" })
+  const clock = date.toLocaleTimeString("en", { hour12: false })
+  return `${day} ${rest} · ${clock}`
 }
 
 /** Navigates the host to a real subagent session, ignoring synthetic row ids. */
@@ -377,7 +386,7 @@ function taskProgressVisible() {
   return !(raw === "" || raw === "0" || raw === "false" || raw === "off" || raw === "no")
 }
 
-export function InfoCard(props: { api: TuiPluginApi; name: string; title: string; summary: string; children: JSX.Element; initialOpen?: boolean; onOpen?: (open: boolean) => void; onActivate?: () => void }) {
+export function InfoCard(props: { api: TuiPluginApi; name: string; title: string; summary: string; summaryTitle?: string; children: JSX.Element; initialOpen?: boolean; onOpen?: (open: boolean) => void; onActivate?: () => void }) {
   const [open, setOpen] = createSignal(props.api.kv.get<boolean>(`studio.card.${props.name}`, props.initialOpen ?? false))
   const [hovered, setHovered] = createSignal(false)
   const theme = () => props.api.theme.current
@@ -409,8 +418,9 @@ export function InfoCard(props: { api: TuiPluginApi; name: string; title: string
     onMouseOut={clickable() ? () => setHovered(false) : undefined}>
     <box flexDirection="row" onMouseDown={header}>
       <text fg={hovered() ? theme().accent : theme().primary} onMouseDown={(event) => { if (event.button === 0) { event.stopPropagation(); toggle() } }}><b>{open() ? "▾" : "▸"}</b></text>
-      <text fg={hovered() ? theme().accent : theme().primary}><b> {props.title}{clickable() ? " →" : ""}</b></text>
+      <text fg={hovered() ? theme().accent : theme().primary} wrapMode="none" truncate flexShrink={1}><b> {props.title}{clickable() ? " →" : ""}</b></text>
     </box>
+    <Show when={props.summaryTitle}><text fg={theme().textMuted} wrapMode="none" truncate onMouseDown={header}>{props.summaryTitle}</text></Show>
     <text fg={theme().textMuted} wrapMode="word" onMouseDown={header}>{props.summary}</text>
     <Show when={open()}><box paddingTop={1} paddingBottom={1}>{props.children}</box></Show>
   </box>
@@ -453,21 +463,22 @@ export function SubagentCard(props: { api: TuiPluginApi; agent: ReturnType<typeo
     const end = ended() ?? now()
     return start !== undefined && Number.isFinite(start) && start > 0 ? Math.max(0, end - start) : 0
   }
-  // Session title replaces the provider/model line; the stat line carries Tools,
-  // context used with percent of limit, and output tokens/sec next to elapsed.
+  // Session title replaces the provider/model line and is clipped to one line;
+  // the stat line leads with Tools, then elapsed, context used with percent of
+  // limit, and output tokens/sec.
+  const summaryTitle = () => data()?.title ?? "Loading title…"
   const summary = () => {
     const detail = data()
     const seconds = elapsed() / 1000
-    const stat = [
-      elapsedLabel(started(), ended() ?? now()),
+    return [
       detail ? `${detail.toolCount} Tools` : "… Tools",
+      elapsedLabel(started(), ended() ?? now()),
       detail?.used !== undefined ? `${compact(detail.used)} (${detail.percent ?? 0}%)` : undefined,
       detail?.output !== undefined && seconds > 0 ? `${Math.round(detail.output / seconds)} Tok/s` : undefined,
     ].filter((part): part is string => Boolean(part)).join(" · ")
-    return `${detail?.title ?? "Loading title…"}\n${stat}`
   }
   const progress = () => props.agent.progress?.total ? ` · ${props.agent.progress.completed}/${props.agent.progress.total}` : ""
-  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Just ended" : props.agent.label}${progress()}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summary={summary()}>
+  return <InfoCard api={props.api} name={`agent-${props.agent.id}`} title={`${props.agent.name} · ${props.ended ? "Just ended" : props.agent.label}${progress()}`} onActivate={() => navigateToSession(props.api, props.agent.id)} summaryTitle={summaryTitle()} summary={summary()}>
     <Show when={props.agent.target}><text fg={theme().text} wrapMode="word">{props.agent.target}</text></Show>
     <Show when={error()}><text fg={theme().warning}>{error()}</text></Show>
     <Show when={data()}>{(detail) => <box gap={1}>
@@ -625,6 +636,32 @@ export function ObservedWait(props: { reason: string; session: string }) {
   return <Show when={props.reason}><text wrapMode="word">{props.reason} · {seconds()}s observed</text></Show>
 }
 
+/**
+ * Two progress bars shown above the Creatures card: the main agent's own todo
+ * completion, and the cumulative running/total across every subagent. Both are
+ * driven by the same reactive todo store the cards read, so they update live.
+ */
+export function ProgressBars(props: { api: TuiPluginApi; id: string }) {
+  const theme = () => props.api.theme.current
+  const size = useTerminalDimensions()
+  const width = () => Math.max(6, Math.min(30, (size().width || 40) - 14))
+  const main = createMemo(() => mainTodoProgress(props.api.state.session.todo(props.id)))
+  const subs = createMemo(() => subagentTodoProgress(sidebarActivity(props.api, props.id).agents))
+  const label = (text: string) => <text fg={theme().textMuted} wrapMode="none">{text}</text>
+  return <box>
+    <box flexDirection="row">
+      {label("Main todos  ")}
+      <text fg={theme().primary} wrapMode="none">{renderBar(main().fraction, width())}</text>
+      {label(`  ${main().completed}/${main().total}`)}
+    </box>
+    <box flexDirection="row">
+      {label("Subagent    ")}
+      <text fg={theme().accent} wrapMode="none">{renderBar(subs().fraction, width())}</text>
+      {label(`  ${subs().running} running / ${subs().total}`)}
+    </box>
+  </box>
+}
+
 export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean }) {
   const theme = () => props.api.theme.current
   const data = createMemo(() => sessionMetrics(props.api, props.id))
@@ -638,6 +675,7 @@ export function Overview(props: { api: TuiPluginApi; id: string; mini?: boolean 
         <text fg={theme().text} wrapMode="char"><b>{data().model}</b></text>
         <text fg={theme().textMuted}>{data().agent ?? "New session"} · {activity().status?.type === "busy" ? "Working" : activity().status?.type === "retry" ? "Retrying" : "Ready"}</text>
       </box>
+      <ProgressBars api={props.api} id={props.id} />
       <CreatureCard api={props.api} id={props.id} />
       <ObservedWait reason={waitingReason(props.api, props.id, activity())} session={props.id} />
       <box>
@@ -684,6 +722,7 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
   const activity = createMemo(() => sidebarActivity(props.api, props.id))
   const identity = createMemo(() => asyncIdentity(props.api, props.id))
   const theme = () => props.api.theme.current
+  const now = createClock()
   // Single physical line: the dock absorbs the old StatusBar content (MCP/plugin)
   // so app_bottom renders exactly one line at any width.
   const width = () => Math.max(1, (size().width || 80) - 2)
@@ -701,6 +740,7 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
     }
     list.push({ text: " | /studio-panel · detail", tone: "accent", priority: 4 })
     list.push({ text: ` | ${props.api.state.vcs?.branch ?? "local"}`, tone: "muted", priority: 5 })
+    list.push({ text: ` | ${clockLabel(now())}`, tone: "muted", priority: 6 })
     return fitStatus(list, width())
   }
   const open = () => props.api.ui.dialog.replace(() => <props.api.ui.Dialog onClose={() => props.api.ui.dialog.clear()}>
@@ -731,11 +771,15 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
 function StatusBar(props: { api: TuiPluginApi }) {
   const size = useTerminalDimensions()
   const theme = () => props.api.theme.current
+  const now = createClock()
   return (
     <box flexDirection="row" justifyContent="space-between" backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} width="100%" height={1} flexShrink={0}>
       <text fg={theme().primary}><b>ASYNC</b></text>
       <Show when={size().width >= 65}>
         <text fg={theme().textMuted}>{mcpPluginLabel(props.api)}</text>
+      </Show>
+      <Show when={size().width >= 95}>
+        <text fg={theme().textMuted}>{clockLabel(now())}</text>
       </Show>
       <text fg={theme().textMuted}>{props.api.state.vcs?.branch ?? "local"}</text>
     </box>

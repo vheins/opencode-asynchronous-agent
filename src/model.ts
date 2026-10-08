@@ -78,7 +78,11 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
     // reactive in the host sync store (keyed by session), so the sidebar can show
     // `completed/total` without fetching the child transcript.
     const childTodos = child ? api.state.session.todo(child) : []
-    const progress = { completed: childTodos.filter((todo) => todo.status === "completed").length, total: childTodos.length }
+    const progress = {
+      completed: childTodos.filter((todo) => todo.status === "completed").length,
+      inProgress: childTodos.filter((todo) => todo.status === "in_progress").length,
+      total: childTodos.length,
+    }
     return [{
       key: child ?? tool.callID,
       id: child ?? tool.callID,
@@ -106,4 +110,50 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
     attention: api.state.session.permission(id).length + api.state.session.question(id).length,
     status: api.state.session.status(id),
   }
+}
+
+/**
+ * Renders a block progress bar of `width` cells, filled by `fraction` (0..1).
+ * Clamped so an empty list yields a fully empty bar and overflow a full one.
+ *
+ * @param {number} fraction
+ * @param {number} width
+ * @returns {string}
+ */
+export function renderBar(fraction: number, width: number): string {
+  const cells = Math.max(1, Math.floor(width))
+  const ratio = Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : 0
+  const filled = Math.round(ratio * cells)
+  return `${"█".repeat(filled)}${"░".repeat(cells - filled)}`
+}
+
+/**
+ * Main-agent todo progress: completed out of the session's own todo list.
+ *
+ * @param {ReadonlyArray<{ status: string }>} todos
+ * @returns {{ completed: number, total: number, fraction: number }}
+ */
+export function mainTodoProgress(todos: ReadonlyArray<{ status: string }>) {
+  const total = todos.length
+  const completed = todos.filter((todo) => todo.status === "completed").length
+  return { completed, total, fraction: total > 0 ? completed / total : 0 }
+}
+
+/**
+ * Cumulative subagent todo progress across every child: the running count is
+ * the sum of each child's in-progress todos, over the sum of all child todos.
+ *
+ * @param {ReadonlyArray<{ progress?: { completed: number, inProgress: number, total: number } }>} agents
+ * @returns {{ running: number, completed: number, total: number, fraction: number }}
+ */
+export function subagentTodoProgress(agents: ReadonlyArray<{ progress?: { completed: number, inProgress: number, total: number } }>) {
+  let running = 0
+  let completed = 0
+  let total = 0
+  for (const agent of agents) {
+    running += agent.progress?.inProgress ?? 0
+    completed += agent.progress?.completed ?? 0
+    total += agent.progress?.total ?? 0
+  }
+  return { running, completed, total, fraction: total > 0 ? running / total : 0 }
 }

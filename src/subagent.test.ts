@@ -23,6 +23,17 @@ test("subagent reports its own model, active tool and actual todo counts", () =>
   expect(elapsedLabel(result.started, 3662000)).toBe("1h 1m 1s")
 })
 
+test("a live child mid-step still reports usage from its newest message with tokens", () => {
+  const messages = [
+    { info: { role: "assistant", providerID: "p", modelID: "m", tokens: { input: 800, output: 200, reasoning: 0, cache: { read: 0, write: 0 } } } as Message, parts: [] },
+    { info: { role: "assistant", providerID: "p", modelID: "m", tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } } as Message, parts: [] },
+  ]
+  const result = subagentDetails(undefined, messages, [], 2000)
+  expect(result.used).toBe(1000)
+  expect(result.output).toBe(200)
+  expect(result.percent).toBe(50)
+})
+
 test("unreported child model and progress do not inherit parent or invent a percentage", () => {
   const result = subagentDetails(undefined, [], [])
   expect(result).toMatchObject({ title: "Title not reported yet", model: "Model not reported yet", current: false, activity: undefined, completed: 0, todos: [] })
