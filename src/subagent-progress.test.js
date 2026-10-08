@@ -83,9 +83,9 @@ test("summarizeTodos counts each status and flags terminal", () => {
   expect(summarizeTodos([]).terminal).toBe(false)
 })
 
-test("formatProgressReport includes agent, counts, and each todo line", () => {
-  const text = formatProgressReport({ sessionID: "ses_child", agent: "frontend", title: "T", todos: TODOS })
-  expect(text).toContain("[subagent progress] frontend (ses_child)")
+test("formatProgressReport includes reporter, recipient, counts, and each todo line", () => {
+  const text = formatProgressReport({ sessionID: "ses_child", agent: "frontend", parentAgent: "orchestrator", title: "T", todos: TODOS })
+  expect(text).toContain("⤷ frontend · reporting to orchestrator")
   expect(text).toContain("1/3 done")
   expect(text).toContain("- [in_progress] b")
 })
@@ -103,17 +103,23 @@ test("shouldReport sends final once, coalesces non-final by interval", () => {
   expect(shouldReport({ lastReportAt: 1000, lastText: "3/3 done", finalSent: true }, final, 999999, 120000)).toBe(false)
 })
 
-test("injects a report into the parent when a child updates todos", async () => {
-  const { client, calls } = fakeClient({ sessions: { ses_parent: { agent: "orchestrator", model: { id: "m", providerID: "p" } } } })
+test("injects a visible report into the parent when a child updates todos", async () => {
+  const { client, calls } = fakeClient({
+    sessions: {
+      ses_parent: { id: "ses_parent", agent: "orchestrator", model: { id: "m", providerID: "p" } },
+      ses_child: { id: "ses_child", parentID: "ses_parent", agent: "frontend" },
+    },
+  })
   const progress = createSubagentProgress({ client, now: () => 1000, intervalMs: 120000 })
-  await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_child", parentID: "ses_parent" } } } })
+  await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_child", parentID: "ses_parent", agent: "frontend" } } } })
+  await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_parent", agent: "orchestrator" } } } })
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
   expect(calls.promptAsync.length).toBe(1)
   const call = calls.promptAsync[0]
   expect(call.path.id).toBe("ses_parent")
   expect(call.body.agent).toBe("orchestrator")
-  expect(call.body.parts[0].synthetic).toBe(true)
-  expect(call.body.parts[0].text).toContain("[subagent progress]")
+  expect(call.body.parts[0].synthetic).toBeUndefined()
+  expect(call.body.parts[0].text).toContain("⤷ frontend · reporting to orchestrator")
 })
 
 test("does not inject for a root session (no parent)", async () => {

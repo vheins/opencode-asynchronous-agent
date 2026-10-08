@@ -316,6 +316,17 @@ appends a short instruction to each child's system prompt telling it to keep its
 todo list current (mark one item `in_progress`, then `completed` as it goes). The
 instruction is injected only into child sessions, never the parent or root.
 
+Reports are injected as **visible** text parts (not synthetic), so they render
+inline in the parent's transcript, headed by an arrow icon, the reporting child
+and the recipient parent, mirroring a tool-call row:
+
+```text
+⤷ frontend · reporting to orchestrator · "Build checkout UI" — 1/3 done · 1 in_progress · 1 pending
+  - [completed] Scaffold routes
+  - [in_progress] Build form
+  - [pending] Wire API
+```
+
 ```sh
 export OPENCODE_SUBAGENT_PROGRESS=1
 ```

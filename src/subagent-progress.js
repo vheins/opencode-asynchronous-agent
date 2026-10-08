@@ -7,10 +7,15 @@
  * `todo.updated` event the child emits whenever it calls `todowrite`.
  *
  * It is deliberately event-driven, never polled. On each `todo.updated` from a
- * child session it injects a short synthetic prompt into the parent session via
- * the async prompt endpoint (the same mechanism OpenCode uses for its native
- * completion notice). The injection is fire-and-forget and does not block the
- * child.
+ * child session it injects a short report into the parent session via the async
+ * prompt endpoint (the same mechanism OpenCode uses for its native completion
+ * notice). The injection is fire-and-forget and does not block the child.
+ *
+ * The report is injected as a NON-synthetic text part so it is visible inline in
+ * the parent's transcript (a synthetic part is hidden from the TUI). It renders
+ * as an agent-colored inline entry headed by `⤷ <child> reporting to <parent>`,
+ * mirroring a tool-call row without needing a core change. The parent model sees
+ * the same text, so a visible report costs no extra model context.
  *
  * Every injection costs the parent a full model turn, so reports are coalesced:
  * at most one report per child per `intervalMs` (default 120000 ms), and exactly
@@ -115,16 +120,21 @@ export function summarizeTodos(todos) {
 /**
  * Render the report text injected into the parent session.
  *
- * @param {{ sessionID: string, agent?: string, title?: string, todos?: Array<object> }} input
+ * The header reads like an inline tool-call row: an arrow icon, the reporting
+ * child agent, and the recipient parent agent, followed by the compact counts.
+ * Each todo is listed beneath it.
+ *
+ * @param {{ sessionID: string, agent?: string, parentAgent?: string, parentID?: string, title?: string, todos?: Array<object> }} input
  * @returns {string}
  */
 export function formatProgressReport(input) {
   const summary = summarizeTodos(input?.todos)
-  const who = input?.agent ? `${input.agent} (${input.sessionID})` : input?.sessionID
+  const reporter = input?.agent || input?.sessionID || "subagent"
+  const recipient = input?.parentAgent || input?.parentID || "parent"
   const title = input?.title ? ` · ${JSON.stringify(input.title)}` : ""
-  const header = `[subagent progress] ${who}${title}: ${summary.text}`
+  const header = `⤷ ${reporter} · reporting to ${recipient}${title} — ${summary.text}`
   const lines = (Array.isArray(input?.todos) ? input.todos : []).map(
-    (todo) => `- [${todo?.status ?? "?"}] ${todo?.content ?? ""}`.trimEnd(),
+    (todo) => `  - [${todo?.status ?? "?"}] ${todo?.content ?? ""}`.trimEnd(),
   )
   return [header, ...lines].join("\n")
 }
@@ -172,10 +182,12 @@ export function createSubagentProgress(options = {}) {
   const states = new Map()
   const parents = new Map()
   const roots = new Set()
+  const agents = new Map()
 
   /** Record child -> parent linkage (or mark a session as a root) from info. */
   function rememberParent(info) {
     if (!info || typeof info.id !== "string") return
+    if (typeof info.agent === "string" && info.agent) agents.set(info.id, info.agent)
     if (typeof info.parentID === "string" && info.parentID) {
       parents.set(info.id, info.parentID)
       roots.delete(info.id)
@@ -215,7 +227,10 @@ export function createSubagentProgress(options = {}) {
     output.system.push(PROGRESS_SYSTEM_INSTRUCTION)
   }
 
-  /** Best-effort injection of one report into the parent session. */
+  /**
+   * Best-effort injection of one report into the parent session. The report is
+   * sent as a NON-synthetic text part so the parent's TUI renders it inline.
+   */
   async function inject(parentID, text) {
     const api = client?.session
     if (typeof api?.promptAsync !== "function") return false
@@ -231,9 +246,23 @@ export function createSubagentProgress(options = {}) {
     }
     await api.promptAsync({
       path: { id: parentID },
-      body: { parts: [{ type: "text", synthetic: true, text }], ...target },
+      body: { parts: [{ type: "text", text }], ...target },
     })
     return true
+  }
+
+  /** Read a session's agent name (best-effort) for the report header. */
+  async function agentOf(sessionID) {
+    const api = client?.session
+    if (typeof api?.get !== "function") return undefined
+    try {
+      const response = await api.get({ path: { id: sessionID } })
+      const info = response && typeof response === "object" && "data" in response ? response.data : response
+      rememberParent(info)
+      return typeof info?.agent === "string" && info.agent ? info.agent : undefined
+    } catch {
+      return undefined
+    }
   }
 
   /** Handle one plugin event. */
@@ -260,7 +289,9 @@ export function createSubagentProgress(options = {}) {
     const state = states.get(sessionID)
     if (!shouldReport(state, summary, now(), intervalMs)) return
 
-    const text = formatProgressReport({ sessionID, title: props.title, todos })
+    const agent = agents.get(sessionID) ?? (await agentOf(sessionID))
+    const parentAgent = agents.get(parentID)
+    const text = formatProgressReport({ sessionID, agent, parentAgent, parentID, title: props.title, todos })
     try {
       const sent = await inject(parentID, text)
       if (!sent) return
@@ -283,6 +314,7 @@ export function createSubagentProgress(options = {}) {
       states.clear()
       parents.clear()
       roots.clear()
+      agents.clear()
     },
   }
 }
