@@ -54,7 +54,10 @@ export const DEFAULT_MAX_DIAGNOSTICS_CHARS = 32_000
 /** Default preview size retained when trimming an old tool part. */
 export const DEFAULT_PART_PREVIEW_CHARS = 2_000
 
-/** Max part rows rewritten in a single prune pass (keeps DB locks short). */
+/** Max event rows deleted in a single statement (keeps DB write locks short). */
+export const DEFAULT_EVENT_BATCH = 500
+
+/** Max part rows rewritten in a single prune transaction (keeps DB locks short). */
 export const DEFAULT_PART_BATCH = 500
 
 /** Values accepted as "enabled"/"disabled" for boolean env gates. */
@@ -99,6 +102,7 @@ export function envNumber(env, key, fallback) {
  *   maxDisplayChars: number,
  *   maxDiagnosticsChars: number,
  *   partPreviewChars: number,
+ *   eventBatch: number,
  *   partBatch: number,
  *   vacuum: boolean,
  *   debug: boolean,
@@ -117,6 +121,7 @@ export function resolveLimits(env = process.env) {
       DEFAULT_MAX_DIAGNOSTICS_CHARS,
     ),
     partPreviewChars: envNumber(env, "OPENCODE_DB_CLEANUP_PART_PREVIEW_CHARS", DEFAULT_PART_PREVIEW_CHARS),
+    eventBatch: envNumber(env, "OPENCODE_DB_CLEANUP_EVENT_BATCH", DEFAULT_EVENT_BATCH),
     partBatch: envNumber(env, "OPENCODE_DB_CLEANUP_PART_BATCH", DEFAULT_PART_BATCH),
     vacuum: TRUTHY.has(String(env.OPENCODE_DB_CLEANUP_VACUUM ?? "").trim().toLowerCase()),
     debug: String(env.OPENCODE_DB_CLEANUP_DEBUG ?? "") === "1",
@@ -319,10 +324,18 @@ export function defaultDataDir(env = process.env) {
  * from it, so removing it would cause collisions. `session` / `message` rows
  * are never removed, so the model's projection history stays intact.
  *
+ * Both mutations are bounded to small batches (`eventBatch` / `partBatch` rows
+ * per statement). A plugin shares the database with the running OpenCode
+ * process, whose writes fail with "database is locked" when another writer holds
+ * the SQLite write lock past `busy_timeout`; on a multi-GB database a single
+ * unbounded `DELETE` over hundreds of sessions can hold that lock for seconds.
+ * Batched statements keep each lock window to milliseconds.
+ *
  * @param {import("bun:sqlite").Database} db
  * @param {{
  *   retentionMs: number,
  *   partPreviewChars: number,
+ *   eventBatch: number,
  *   partBatch: number,
  *   now?: number,
  *   debug?: boolean,
@@ -332,6 +345,8 @@ export function defaultDataDir(env = process.env) {
 export function pruneDatabase(db, options) {
   const now = options.now ?? Date.now()
   const cutoff = now - options.retentionMs
+  const eventBatch = Math.max(1, Math.floor(options.eventBatch ?? DEFAULT_EVENT_BATCH))
+  const partBatch = Math.max(1, Math.floor(options.partBatch ?? DEFAULT_PART_BATCH))
 
   const inactive = db
     .query("SELECT id FROM session WHERE time_updated < ?")
@@ -344,7 +359,19 @@ export function pruneDatabase(db, options) {
 
   const placeholders = inactive.map(() => "?").join(",")
 
-  const eventResult = db.run(`DELETE FROM event WHERE aggregate_id IN (${placeholders})`, inactive)
+  // Delete in bounded batches: each statement commits after at most `eventBatch`
+  // rows, so the write lock is never held for a full multi-session sweep.
+  const deleteEvents = db.prepare(
+    `DELETE FROM event WHERE rowid IN (
+       SELECT rowid FROM event WHERE aggregate_id IN (${placeholders}) LIMIT ?
+     )`,
+  )
+  let eventsDeleted = 0
+  for (;;) {
+    const changes = deleteEvents.run(...inactive, eventBatch).changes
+    eventsDeleted += changes
+    if (changes < eventBatch) break
+  }
 
   const parts = db
     .query(
@@ -353,7 +380,7 @@ export function pruneDatabase(db, options) {
          AND json_extract(data, '$.type') = 'tool'
        LIMIT ?`,
     )
-    .all(...inactive, options.partBatch)
+    .all(...inactive, partBatch)
 
   let partsTrimmed = 0
   const update = db.prepare("UPDATE part SET data = ? WHERE id = ?")
@@ -370,11 +397,11 @@ export function pruneDatabase(db, options) {
   if (options.debug) {
     console.error(
       `[opencode-db-cleanup] pruned ${inactive.length} inactive session(s): ` +
-        `${eventResult.changes} event row(s) deleted, ${partsTrimmed} part(s) trimmed`,
+        `${eventsDeleted} event row(s) deleted, ${partsTrimmed} part(s) trimmed`,
     )
   }
 
-  return { sessions: inactive.length, eventsDeleted: eventResult.changes, partsTrimmed }
+  return { sessions: inactive.length, eventsDeleted, partsTrimmed }
 }
 
 /**
@@ -485,6 +512,7 @@ export function createCleanup(options = {}) {
     const result = pruneDatabase(handle, {
       retentionMs: limits.retentionMs,
       partPreviewChars: limits.partPreviewChars,
+      eventBatch: limits.eventBatch,
       partBatch: limits.partBatch,
       now: now(),
       debug: limits.debug,

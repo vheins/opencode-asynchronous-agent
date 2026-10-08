@@ -157,6 +157,24 @@ test("pruneDatabase does nothing when no session is inactive", () => {
   expect(db.query("SELECT COUNT(*) n FROM event").get().n).toBe(1)
 })
 
+test("pruneDatabase deletes events in bounded batches across many rows", () => {
+  const db = memoryDb()
+  const now = 1_000_000_000
+  db.run("INSERT INTO session (id, time_updated) VALUES (?, ?)", ["old", now - 5000])
+  for (let i = 0; i < 25; i++) {
+    db.run("INSERT INTO event (id, aggregate_id, seq) VALUES (?, ?, ?)", [`e${i}`, "old", i])
+  }
+  const result = pruneDatabase(db, {
+    retentionMs: 1000,
+    partPreviewChars: 100,
+    eventBatch: 10,
+    partBatch: 10,
+    now,
+  })
+  expect(result.eventsDeleted).toBe(25)
+  expect(db.query("SELECT COUNT(*) n FROM event").get().n).toBe(0)
+})
+
 test("checkpointPassive never takes a blocking lock", () => {
   const db = memoryDb()
   expect(checkpointPassive(db)).toEqual({ checkpointed: true })

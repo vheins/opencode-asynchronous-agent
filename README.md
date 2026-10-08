@@ -174,6 +174,7 @@ All configuration is optional and read from environment variables at setup time.
 | `OPENCODE_DB_CLEANUP_MAX_DISPLAY_CHARS` | `64000` | Write-time cap for read `metadata.display.text`. |
 | `OPENCODE_DB_CLEANUP_MAX_DIAGNOSTICS_CHARS` | `32000` | Write-time cap for `metadata.diagnostics` (emptied to `{}` when exceeded). |
 | `OPENCODE_DB_CLEANUP_PART_PREVIEW_CHARS` | `2000` | Length an old tool part's `state.output` is trimmed to during pruning. |
+| `OPENCODE_DB_CLEANUP_EVENT_BATCH` | `500` | Max `event` rows deleted per statement during pruning (keeps the SQLite write lock short). |
 | `OPENCODE_DB_CLEANUP_PART_BATCH` | `500` | Max `part` rows trimmed per cleanup run. |
 | `OPENCODE_DB_CLEANUP_VACUUM` | *(off)* | Set to `1` to `VACUUM` at shutdown after a run that deleted rows (reclaims file space; the DB ships with `auto_vacuum=0`). |
 | `OPENCODE_DB_CLEANUP_DEBUG` | *(off)* | Set to `1` to log cleanup decisions to stderr. |
