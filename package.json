@@ -1,7 +1,7 @@
 {
   "name": "@vheins/opencode-asynchronous-agent",
-  "version": "0.7.0",
-  "description": "OpenCode plugin (V1 + V2): runs every subagent asynchronously in the background, plus a TUI sidebar monitor with token/TPS stats and a collapsed-sidebar status bar.",
+  "version": "0.9.4",
+  "description": "OpenCode plugin (V1 + V2): runs every subagent asynchronously in the background, a TUI sidebar monitor with token/TPS stats, opt-in background-subagent control tools (children/result/wait/cancel/send), and an opt-out V1 database cleanup that caps tool output and prunes stale event/part rows.",
   "type": "module",
   "main": "./server.js",
   "scripts": {
