@@ -41,12 +41,64 @@
  *   OPENCODE_SUBAGENT_STALE_MS=120000       Age after which a still-running
  *                                           child is reported as stale.
  *
+ * ── Subagent control tools (opt-in, V1 only) ────────────────────────────────
+ * OpenCode's model is push-only, so the parent cannot join, inspect, cancel, or
+ * steer background subagents. These tools close that gap via the public SDK:
+ *
+ *   subagent_children  list a parent's child sessions
+ *   subagent_result    fetch a child's final assistant answer
+ *   subagent_wait      block until children finish or a timeout elapses
+ *   subagent_cancel    abort a running child
+ *   subagent_send      queue extra context into a child (non-blocking)
+ *
+ *   OPENCODE_SUBAGENT_CONTROL=1             Register the control tools. Setting
+ *                                           OPENCODE_SUBAGENT_STATUS=1 enables
+ *                                           both suites.
+ *   OPENCODE_SUBAGENT_RESULT_CHARS=20000    Cap for subagent_result output.
+ *   OPENCODE_SUBAGENT_WAIT_MS=300000        Default subagent_wait timeout.
+ *   OPENCODE_SUBAGENT_POLL_MS=1000          subagent_wait poll interval.
+ *
+ * ── Database cleanup (opt-out, V1 only) ─────────────────────────────────────
+ * OpenCode stores each session twice (projection tables + an event-sourcing
+ * log) and persists tool results verbatim, so long-lived databases grow into
+ * the multi-GB range. On the V1 entrypoint this plugin:
+ *
+ *   - caps oversized tool output and UI-only metadata at write time via
+ *     `tool.execute.after`, and
+ *   - periodically deletes `event` rows and trims `part` rows for sessions
+ *     inactive past the retention window (never touching `event_sequence` or
+ *     the session/message rows the model reads).
+ *
+ *   OPENCODE_DB_CLEANUP=0                   Disable cleanup entirely.
+ *   OPENCODE_DB_CLEANUP_RETENTION_MS=...    Inactive age before pruning
+ *                                           (default 259200000 = 3 days).
+ *   OPENCODE_DB_CLEANUP_INTERVAL_MS=...     Minimum delay between prune passes
+ *                                           (default 21600000 = 6 hours).
+ *   OPENCODE_DB_CLEANUP_MAX_OUTPUT_CHARS=.. Cap for model-visible tool output
+ *                                           (default 100000).
+ *   OPENCODE_DB_CLEANUP_MAX_DIFF_CHARS=...  Cap for UI-only diff metadata
+ *                                           (default 64000).
+ *   OPENCODE_DB_CLEANUP_MAX_DIAGNOSTICS_CHARS=...
+ *                                           Cap for the UI-only LSP diagnostics
+ *                                           blob (default 32000; oversized
+ *                                           blobs are emptied).
+ *   OPENCODE_DB_CLEANUP_PART_PREVIEW_CHARS= Preview kept when trimming an old
+ *                                           tool part (default 2000).
+ *   OPENCODE_DB_CLEANUP_PART_BATCH=...      Max parts rewritten per pass
+ *                                           (default 500).
+ *   OPENCODE_DB_CLEANUP_VACUUM=1            Also VACUUM after a prune (needs
+ *                                           exclusive DB access; opt-in).
+ *   OPENCODE_DB_CLEANUP_DEBUG=1             Log prune activity to stderr.
+ *
  * The tool is only registered on the V1 entrypoint, which is the only plugin
- * surface that supports custom-tool and event registration. On V2 the request
- * degrades gracefully with a one-line stderr hint.
+ * surface that supports custom-tool and event registration. On a V2-only build
+ * the V2 entrypoint is a no-op (it cannot register tools); a dual V1+V2 build
+ * registers everything through the V1 `server` entrypoint.
  */
 
 import { createSubagentStatus, statusEnabled } from "./subagent-status.js"
+import { controlEnabled, createSubagentControl } from "./subagent-control.js"
+import { cleanupEnabled, createCleanup } from "./cleanup.js"
 
 /** Stable plugin identifier. */
 export const PLUGIN_ID = "opencode-asynchronous-agent"
@@ -130,9 +182,9 @@ function backgroundSubagent(tool, args, parentAgent, sessionID, debug) {
 
 /**
  * OpenCode V1 entry point. Receives the V1 `PluginInput` and returns a `Hooks`
- * object. V1 does not pass the calling agent to `tool.execute.before`, so the
- * agent allow/deny list cannot filter on the parent agent here; the session id
- * is still available for debug logging.
+ * object. V1 does not pass the calling agent to `tool.execute.before`, so this
+ * entrypoint learns the parent agent from the `chat.message` hook (keyed by
+ * session id) and uses it to apply the allow/deny list.
  *
  * @param {import("@opencode-ai/plugin").PluginInput} ctx
  */
@@ -142,22 +194,65 @@ export async function autoBackgroundPluginV1(ctx) {
   const directory = ctx?.directory ?? process.cwd()
   const supported = backgroundSupported()
 
+  // V1's `tool.execute.before` omits the calling agent, so remember the agent
+  // per session from `chat.message` (which does carry it) to make
+  // OPENCODE_AUTO_BG_AGENTS / OPENCODE_AUTO_BG_EXCEPT work on V1.
+  const sessionAgents = new Map()
+
   // Opt-in status tool. Independent of the background flag: it tracks child
   // sessions from plugin events and reports running/done/error/stale.
   const status = statusEnabled() ? createSubagentStatus({ client: ctx?.client, directory }) : undefined
 
+  // Opt-in control tools: list/result/wait/cancel/send for background children.
+  const control = controlEnabled() ? createSubagentControl({ client: ctx?.client }) : undefined
+
+  // Database cleanup (opt-out): caps tool results at write time and prunes
+  // old event/part rows on a throttled schedule.
+  const cleanup = cleanupEnabled() ? createCleanup() : undefined
+
   if (debugEnabled()) {
     console.error(
       `[opencode-asynchronous-agent] V1 hook active (dir=${directory}, ` +
-        `backgroundSupported=${supported}, statusTool=${Boolean(status)})`,
+        `backgroundSupported=${supported}, statusTool=${Boolean(status)}, ` +
+        `controlTools=${Boolean(control)}, cleanup=${Boolean(cleanup)})`,
     )
   }
 
   const hooks = {}
-  if (status) {
-    hooks.tool = status.tool
-    hooks.event = status.event
-    hooks.dispose = status.dispose
+
+  if (status) hooks.tool = status.tool
+  if (control) hooks.tool = { ...hooks.tool, ...control.tool }
+
+  // Record the agent for each session so the background filter can resolve it
+  // later; `chat.message` is the only V1 hook that carries the agent.
+  if (supported || status || control) {
+    hooks["chat.message"] = async (input) => {
+      if (input && typeof input.sessionID === "string" && typeof input.agent === "string" && input.agent) {
+        sessionAgents.set(input.sessionID, input.agent)
+      }
+    }
+  }
+
+  // The `event` hook fans out to every subscriber; compose status + cleanup.
+  const eventSubscribers = [status?.event, cleanup?.event].filter(Boolean)
+  if (eventSubscribers.length > 0) {
+    hooks.event = async (input) => {
+      for (const subscriber of eventSubscribers) await subscriber(input)
+    }
+  }
+
+  const disposers = [status?.dispose, control?.dispose, cleanup?.dispose].filter(Boolean)
+  if (disposers.length > 0) {
+    hooks.dispose = async () => {
+      for (const dispose of disposers) await dispose()
+      sessionAgents.clear()
+    }
+  }
+
+  if (cleanup) {
+    hooks["tool.execute.after"] = async (input, output) => {
+      cleanup.cap(input, output)
+    }
   }
 
   if (!supported) {
@@ -171,7 +266,8 @@ export async function autoBackgroundPluginV1(ctx) {
   }
 
   hooks["tool.execute.before"] = async (input, output) => {
-    backgroundSubagent(input?.tool, output?.args, input?.agent, input?.sessionID, debugEnabled())
+    const parentAgent = input?.agent ?? sessionAgents.get(input?.sessionID)
+    backgroundSubagent(input?.tool, output?.args, parentAgent, input?.sessionID, debugEnabled())
   }
 
   return hooks
@@ -186,13 +282,19 @@ export async function autoBackgroundPluginV1(ctx) {
 export async function autoBackgroundSetup(ctx) {
   if (isDisabled()) return
 
-  if (statusEnabled()) {
-    console.error(
-      "[opencode-asynchronous-agent] OPENCODE_SUBAGENT_STATUS is set, but this " +
-        "OpenCode build's V2 plugin API cannot register custom tools or event " +
-        "handlers. The subagent_status tool is unavailable; run OpenCode V1 to " +
-        "use it.",
-    )
+  // The V2 plugin host (`@opencode-ai/plugin/v2/promise` `PluginContext`) exposes
+  // only transform hooks (agent/catalog/command/integration/reference/skill/aisdk)
+  // and a plugin domain, so a V2-only build cannot register a tool hook or event
+  // handler. On a dual V1+V2 build the V1 `server` entrypoint does this work; here
+  // we no-op instead of throwing, which keeps the V2 loader quiet.
+  if (typeof ctx?.tool?.hook !== "function") {
+    if (debugEnabled()) {
+      console.error(
+        "[opencode-asynchronous-agent] this build's V2 plugin API exposes no tool hooks; " +
+          "background subagents are handled by the V1 entrypoint.",
+      )
+    }
+    return
   }
 
   const debug = debugEnabled()
