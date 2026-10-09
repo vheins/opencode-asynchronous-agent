@@ -58,16 +58,29 @@
  *                                           both suites.
  *   OPENCODE_SUBAGENT_RESULT_CHARS=20000    Cap for subagent_result output.
  *
- * ── Subagent progress reports (opt-in, V1 only) ─────────────────────────────
+ * ── Subagent progress reports (V1 only, on by default) ──────────────────────
  * A background child can publish progress to its parent as it works: on every
  * `todo.updated` (i.e. each `todowrite`) the plugin injects a short synthetic
  * report into the parent session. Reports are coalesced to at most one per child
- * per interval, plus one final report when all todos are terminal. Event-driven,
- * never polled.
+ * per interval, capped per child, plus one final report when all todos are
+ * terminal. Event-driven, never polled. The default channel is `chat` (hidden
+ * part, no parent model turn); the TUI shows progress independently.
  *
- *   OPENCODE_SUBAGENT_PROGRESS=1            Enable progress reports.
- *   OPENCODE_SUBAGENT_PROGRESS_MS=120000    Min interval between reports per
- *                                           child (default 120000).
+ *   OPENCODE_SUBAGENT_NOTIFICATION_TYPE=..   Channel: toast | chat | inline |
+ *                                            both | off (default chat).
+ *   OPENCODE_SUBAGENT_PROGRESS=0             Disable progress reports.
+ *   OPENCODE_SUBAGENT_PROGRESS_MS=300000     Min interval between reports per
+ *                                            child (default 300000).
+ *   OPENCODE_SUBAGENT_PROGRESS_MAX=5         Max non-final reports per child
+ *                                            (default 5).
+ *
+ * ── Completion notices (V1 only, on by default) ─────────────────────────────
+ * The plugin emulates the completion notice for `subagent_send` follow-ups. Its
+ * channel is DECOUPLED from progress and defaults to `inline` (waking), so the
+ * subagent -> main-agent notification is never silenced:
+ *
+ *   OPENCODE_SUBAGENT_COMPLETION_NOTIFY=..   Channel: toast | chat | inline |
+ *                                            both | off (default inline).
  *
  * ── Database cleanup (opt-out, V1 only) ─────────────────────────────────────
  * OpenCode stores each session twice (projection tables + an event-sourcing
@@ -85,6 +98,17 @@
  *                                           (default 259200000 = 3 days).
  *   OPENCODE_DB_CLEANUP_INTERVAL_MS=...     Minimum delay between prune passes
  *                                           (default 21600000 = 6 hours).
+ *   OPENCODE_DB_CLEANUP_WAL_THRESHOLD=...   WAL size (bytes) above which a
+ *                                           PASSIVE checkpoint runs, and above
+ *                                           which an adaptive prune may run early
+ *                                           (default 67108864 = 64 MiB).
+ *   OPENCODE_DB_CLEANUP_WAL_IDLE_MS=...     Idle window (ms): with no write this
+ *                                           recent, the governor TRUNCATEs the WAL
+ *                                           (default 15000).
+ *   OPENCODE_DB_CLEANUP_WAL_CHECK_MS=...    Spacing (ms) between WAL governor
+ *                                           ticks (default 30000).
+ *   OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS=...  Floor delay (ms) between adaptive
+ *                                           prune passes (default 1800000 = 30m).
  *   OPENCODE_DB_CLEANUP_MAX_OUTPUT_CHARS=.. Cap for model-visible tool output
  *                                           (default 100000).
  *   OPENCODE_DB_CLEANUP_MAX_DIFF_CHARS=...  Cap for UI-only diff metadata
@@ -207,6 +231,9 @@ export async function autoBackgroundPluginV1(ctx) {
   const directory = ctx?.directory ?? process.cwd()
   const supported = backgroundSupported()
 
+  /** Periodic WAL-governor timer (cleared on dispose). */
+  let walTimer
+
   // V1's `tool.execute.before` omits the calling agent, so remember the agent
   // per session from `chat.message` (which does carry it) to make
   // OPENCODE_AUTO_BG_AGENTS / OPENCODE_AUTO_BG_EXCEPT work on V1.
@@ -219,9 +246,10 @@ export async function autoBackgroundPluginV1(ctx) {
   // Emulated completion notice for `subagent_send` follow-ups: records the
   // child->parent linkage when a follow-up is queued, then delivers one
   // completion notice into the parent on the child's next idle. Gated by its own
-  // channel switch (`OPENCODE_SUBAGENT_COMPLETION_NOTIFY`), which defaults to the
-  // progress channel; it is independent of the progress feature so setting the
-  // completion channel alone still constructs it.
+  // channel switch (`OPENCODE_SUBAGENT_COMPLETION_NOTIFY`), which defaults to
+  // `inline` (waking) and is DECOUPLED from the progress channel; it is
+  // independent of the progress feature so setting the completion channel alone
+  // still constructs it.
   const completion = completionEnabled() ? createSubagentCompletion({ client: ctx?.client }) : undefined
 
   // Opt-in control tools: list/result/cancel/send for background children. The
@@ -271,6 +299,10 @@ export async function autoBackgroundPluginV1(ctx) {
   const disposers = [status?.dispose, control?.dispose, progress?.dispose, completion?.dispose, cleanup?.dispose].filter(Boolean)
   if (disposers.length > 0) {
     hooks.dispose = async () => {
+      if (walTimer) {
+        clearInterval(walTimer)
+        walTimer = undefined
+      }
       for (const dispose of disposers) await dispose()
       sessionAgents.clear()
     }
@@ -280,6 +312,17 @@ export async function autoBackgroundPluginV1(ctx) {
     hooks["tool.execute.after"] = async (input, output) => {
       cleanup.cap(input, output)
     }
+    // Periodic WAL governor tick: the event fan-out covers active writes, but a
+    // fully idle process emits no events, so a timer guarantees the quiescent
+    // TRUNCATE path still runs. unref() keeps it from holding the process open.
+    walTimer = setInterval(() => {
+      try {
+        cleanup.walGovern()
+      } catch {
+        // best-effort: a governor failure must never crash the plugin
+      }
+    }, cleanup.limits.walCheckMs)
+    walTimer.unref?.()
   }
 
   // Inject a "keep todowrite current" instruction into child sessions only, so

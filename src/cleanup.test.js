@@ -1,17 +1,22 @@
 import { Database } from "bun:sqlite"
 import { expect, test } from "bun:test"
 import {
+  DEFAULT_WAL_THRESHOLD,
   capToolResult,
   checkpointPassive,
+  checkpointTruncate,
   cleanupEnabled,
   createCleanup,
   envNumber,
+  governWal,
   pruneDatabase,
   reclaimSpace,
   resolveDbPath,
   resolveLimits,
   trimPartData,
   truncateMiddle,
+  walPath,
+  walSize,
 } from "./cleanup.js"
 
 function memoryDb() {
@@ -186,6 +191,71 @@ test("reclaimSpace runs a checkpoint and optional vacuum", () => {
   expect(reclaimSpace(db, { vacuum: true })).toEqual({ checkpointed: true, vacuumed: true })
 })
 
+test("checkpointTruncate runs a truncating checkpoint", () => {
+  const db = memoryDb()
+  expect(checkpointTruncate(db)).toEqual({ checkpointed: true })
+})
+
+test("walPath resolves the -wal sidecar and skips in-memory databases", () => {
+  expect(walPath("/data/opencode.db")).toBe("/data/opencode.db-wal")
+  expect(walPath(":memory:")).toBeUndefined()
+  expect(walPath(undefined)).toBeUndefined()
+})
+
+test("walSize returns the sidecar size or 0 when absent", () => {
+  expect(walSize("/data/opencode.db", () => 4096)).toBe(4096)
+  expect(walSize("/data/opencode.db", () => { throw new Error("ENOENT") })).toBe(0)
+  expect(walSize(":memory:", () => 4096)).toBe(0)
+})
+
+test("governWal does nothing without a WAL", () => {
+  const db = memoryDb()
+  const result = governWal(db, {
+    walSizeBytes: 0,
+    lastWriteAt: 0,
+    now: 100_000,
+    walThreshold: DEFAULT_WAL_THRESHOLD,
+    walIdleMs: 15_000,
+  })
+  expect(result.action).toBe("none")
+})
+
+test("governWal PASSIVE-checkpoints an oversized WAL during active writes", () => {
+  const db = memoryDb()
+  const result = governWal(db, {
+    walSizeBytes: DEFAULT_WAL_THRESHOLD + 1,
+    lastWriteAt: 95_000,
+    now: 100_000, // 5s since last write < 15s idle window
+    walThreshold: DEFAULT_WAL_THRESHOLD,
+    walIdleMs: 15_000,
+  })
+  expect(result.action).toBe("passive")
+})
+
+test("governWal stays passive under the threshold during active writes", () => {
+  const db = memoryDb()
+  const result = governWal(db, {
+    walSizeBytes: 1024,
+    lastWriteAt: 95_000,
+    now: 100_000,
+    walThreshold: DEFAULT_WAL_THRESHOLD,
+    walIdleMs: 15_000,
+  })
+  expect(result.action).toBe("none")
+})
+
+test("governWal TRUNCATEs the WAL once quiescent", () => {
+  const db = memoryDb()
+  const result = governWal(db, {
+    walSizeBytes: 1024,
+    lastWriteAt: 0,
+    now: 100_000, // 100s idle >= 15s
+    walThreshold: DEFAULT_WAL_THRESHOLD,
+    walIdleMs: 15_000,
+  })
+  expect(result.action).toBe("truncate")
+})
+
 test("resolveDbPath prefers an explicit env override", () => {
   expect(resolveDbPath({ env: { OPENCODE_DB: "/tmp/custom.db" } })).toBe("/tmp/custom.db")
   expect(resolveDbPath({ env: { OPENCODE_DB: ":memory:" } })).toBe(":memory:")
@@ -219,7 +289,24 @@ test("resolveLimits applies env overrides and defaults", () => {
   expect(limits.retentionMs).toBe(3_600_000)
   expect(limits.intervalMs).toBe(21_600_000)
   expect(limits.partPreviewChars).toBe(2_000)
+  expect(limits.walThreshold).toBe(67_108_864)
+  expect(limits.walIdleMs).toBe(15_000)
+  expect(limits.walCheckMs).toBe(30_000)
+  expect(limits.pruneFloorMs).toBe(1_800_000)
   expect(limits.vacuum).toBe(false)
+})
+
+test("resolveLimits honours WAL governor env overrides", () => {
+  const limits = resolveLimits({
+    OPENCODE_DB_CLEANUP_WAL_THRESHOLD: "1048576",
+    OPENCODE_DB_CLEANUP_WAL_IDLE_MS: "5000",
+    OPENCODE_DB_CLEANUP_WAL_CHECK_MS: "10000",
+    OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS: "60000",
+  })
+  expect(limits.walThreshold).toBe(1_048_576)
+  expect(limits.walIdleMs).toBe(5_000)
+  expect(limits.walCheckMs).toBe(10_000)
+  expect(limits.pruneFloorMs).toBe(60_000)
 })
 
 test("envNumber ignores non-positive and non-numeric values", () => {
@@ -253,4 +340,60 @@ test("createCleanup throttles prune passes and closes its handle", async () => {
   await cleanup.event({})
 
   await cleanup.dispose()
+})
+
+test("createCleanup throttles the WAL governor tick and tracks writes", () => {
+  const db = memoryDb()
+  let clock = 1_000_000
+  const cleanup = createCleanup({
+    limits: { ...resolveLimits({}), walCheckMs: 30_000, walThreshold: 1_000, walIdleMs: 60_000 },
+    dbPath: "/tmp/opencode-governor.db",
+    now: () => clock,
+    openDb: () => db,
+    sizeOf: () => 5_000,
+  })
+
+  const first = cleanup.walGovern()
+  expect(first.throttled).toBeUndefined()
+  expect(first.action).toBe("truncate") // no write recorded yet -> quiescent
+
+  clock += 1_000
+  expect(cleanup.walGovern().throttled).toBe(true)
+
+  cleanup.markWrite()
+  clock += 40_000
+  const active = cleanup.walGovern()
+  expect(active.action).toBe("passive") // recent write -> passive, never truncate
+})
+
+test("createCleanup runs an adaptive prune when the WAL is over threshold before the interval", async () => {
+  const db = memoryDb()
+  let clock = 1_000_000
+  const cleanup = createCleanup({
+    limits: {
+      ...resolveLimits({}),
+      retentionMs: 1_000,
+      intervalMs: 21_600_000,
+      pruneFloorMs: 1_000,
+      partPreviewChars: 100,
+      walThreshold: 1_000,
+      walCheckMs: 1,
+    },
+    dbPath: "/tmp/opencode-adaptive.db",
+    now: () => clock,
+    openDb: () => db,
+    sizeOf: () => 5_000,
+  })
+
+  // First event establishes lastRun on the regular pass.
+  await cleanup.event({})
+  // Insert an inactive session AFTER the first pass, so only a later prune clears it.
+  db.run("INSERT INTO session (id, time_updated) VALUES (?, ?)", ["old", clock - 5_000])
+  db.run("INSERT INTO event (id, aggregate_id, seq) VALUES (?, ?, ?)", ["e1", "old", 1])
+
+  // Past the floor but far below the 6h interval: the oversized WAL forces an
+  // adaptive pass.
+  clock += 2_000
+  await cleanup.event({})
+  expect(db.query("SELECT COUNT(*) n FROM event").get().n).toBe(0)
 })

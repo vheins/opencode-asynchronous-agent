@@ -60,6 +60,18 @@ export const DEFAULT_EVENT_BATCH = 500
 /** Max part rows rewritten in a single prune transaction (keeps DB locks short). */
 export const DEFAULT_PART_BATCH = 500
 
+/** Default WAL size (bytes) above which the governor issues a PASSIVE checkpoint. */
+export const DEFAULT_WAL_THRESHOLD = 64 * 1024 * 1024
+
+/** Default idle window (ms): with no write this recent, the governor TRUNCATEs the WAL. */
+export const DEFAULT_WAL_IDLE_MS = 15_000
+
+/** Default spacing (ms) between WAL governor ticks. */
+export const DEFAULT_WAL_CHECK_MS = 30_000
+
+/** Default floor (ms) between adaptive prune passes once the DB/WAL is over threshold. */
+export const DEFAULT_PRUNE_FLOOR_MS = 30 * 60 * 1000
+
 /** Values accepted as "enabled"/"disabled" for boolean env gates. */
 const TRUTHY = new Set(["1", "true", "yes", "on", "y"])
 const FALSY = new Set(["0", "false", "no", "off", "n"])
@@ -104,6 +116,10 @@ export function envNumber(env, key, fallback) {
  *   partPreviewChars: number,
  *   eventBatch: number,
  *   partBatch: number,
+ *   walThreshold: number,
+ *   walIdleMs: number,
+ *   walCheckMs: number,
+ *   pruneFloorMs: number,
  *   vacuum: boolean,
  *   debug: boolean,
  * }}
@@ -123,6 +139,10 @@ export function resolveLimits(env = process.env) {
     partPreviewChars: envNumber(env, "OPENCODE_DB_CLEANUP_PART_PREVIEW_CHARS", DEFAULT_PART_PREVIEW_CHARS),
     eventBatch: envNumber(env, "OPENCODE_DB_CLEANUP_EVENT_BATCH", DEFAULT_EVENT_BATCH),
     partBatch: envNumber(env, "OPENCODE_DB_CLEANUP_PART_BATCH", DEFAULT_PART_BATCH),
+    walThreshold: envNumber(env, "OPENCODE_DB_CLEANUP_WAL_THRESHOLD", DEFAULT_WAL_THRESHOLD),
+    walIdleMs: envNumber(env, "OPENCODE_DB_CLEANUP_WAL_IDLE_MS", DEFAULT_WAL_IDLE_MS),
+    walCheckMs: envNumber(env, "OPENCODE_DB_CLEANUP_WAL_CHECK_MS", DEFAULT_WAL_CHECK_MS),
+    pruneFloorMs: envNumber(env, "OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS", DEFAULT_PRUNE_FLOOR_MS),
     vacuum: TRUTHY.has(String(env.OPENCODE_DB_CLEANUP_VACUUM ?? "").trim().toLowerCase()),
     debug: String(env.OPENCODE_DB_CLEANUP_DEBUG ?? "") === "1",
   }
@@ -317,6 +337,37 @@ export function defaultDataDir(env = process.env) {
 }
 
 /**
+ * Resolve the `-wal` sidecar path for a SQLite database path. Returns
+ * `undefined` for an in-memory database, which has no WAL file.
+ *
+ * @param {string | undefined} dbPath
+ * @returns {string | undefined}
+ */
+export function walPath(dbPath) {
+  if (!dbPath || dbPath === ":memory:") return undefined
+  return `${dbPath}-wal`
+}
+
+/**
+ * Read the current WAL sidecar size in bytes, or `0` when the file is absent
+ * (a checkpointed/truncated WAL) or the path is unusable. Best-effort: a stat
+ * failure never throws, so the governor simply sees "no WAL".
+ *
+ * @param {string | undefined} dbPath
+ * @param {(path: string) => number} [sizeOf]
+ * @returns {number}
+ */
+export function walSize(dbPath, sizeOf = (p) => statSync(p).size) {
+  const path = walPath(dbPath)
+  if (!path) return 0
+  try {
+    return sizeOf(path)
+  } catch {
+    return 0
+  }
+}
+
+/**
  * Delete `event` rows and trim `part` rows for sessions inactive longer than
  * the retention window.
  *
@@ -464,20 +515,87 @@ export function reclaimSpace(db, options) {
 }
 
 /**
+ * Truncate the WAL back to zero bytes. Unlike {@link checkpointPassive} this
+ * takes a short exclusive lock on the WAL, so the caller MUST ensure no write
+ * occurred recently (`now - lastWriteAt >= walIdleMs`); otherwise it can make a
+ * concurrent writer fail with "database is locked".
+ *
+ * @param {import("bun:sqlite").Database} db
+ * @param {{ debug?: boolean }} [options]
+ * @returns {{ checkpointed: boolean }}
+ */
+export function checkpointTruncate(db, options = {}) {
+  let checkpointed = false
+  try {
+    db.run("PRAGMA wal_checkpoint(TRUNCATE)")
+    checkpointed = true
+  } catch (error) {
+    if (options.debug) console.error("[opencode-db-cleanup] wal_checkpoint(TRUNCATE) failed", error)
+  }
+  return { checkpointed }
+}
+
+/**
+ * Decide and run the WAL governor action for one tick.
+ *
+ * OpenCode core runs its own in-transaction WAL auto-checkpoint
+ * (`wal_autocheckpoint`, ~4 MiB by default), which fires inside a write
+ * transaction and turns a write into an IO-block storm. The plugin cannot change
+ * core's per-connection PRAGMA, but it CAN keep the WAL small so core's
+ * auto-checkpoint rarely fires:
+ *
+ *   - no WAL at all → nothing to do;
+ *   - a write within `walIdleMs` → at most a non-blocking
+ *     `wal_checkpoint(PASSIVE)` when the WAL exceeds `walThreshold`;
+ *   - quiescent (`now - lastWriteAt >= walIdleMs`) with a non-empty WAL →
+ *     `wal_checkpoint(TRUNCATE)` to shrink it.
+ *
+ * TRUNCATE is never issued while a write occurred within `walIdleMs`.
+ *
+ * @param {import("bun:sqlite").Database} db
+ * @param {{
+ *   walSizeBytes: number,
+ *   lastWriteAt: number,
+ *   now: number,
+ *   walThreshold: number,
+ *   walIdleMs: number,
+ *   debug?: boolean,
+ * }} options
+ * @returns {{ action: "none" | "passive" | "truncate", walSize: number, idle: number }}
+ */
+export function governWal(db, options) {
+  const { walSizeBytes, lastWriteAt, now, walThreshold, walIdleMs, debug } = options
+  const idle = now - lastWriteAt
+  if (!(walSizeBytes > 0)) return { action: "none", walSize: walSizeBytes, idle }
+  if (idle >= walIdleMs) {
+    checkpointTruncate(db, { debug })
+    return { action: "truncate", walSize: walSizeBytes, idle }
+  }
+  if (walSizeBytes > walThreshold) {
+    checkpointPassive(db, { debug })
+    return { action: "passive", walSize: walSizeBytes, idle }
+  }
+  return { action: "none", walSize: walSizeBytes, idle }
+}
+
+/**
  * Create the cleanup feature: the write-time capping hook, the throttled
- * retention-prune hook, and a disposal callback.
+ * retention-prune hook, the WAL governor, and a disposal callback.
  *
  * @param {{
  *   limits?: ReturnType<typeof resolveLimits>,
  *   dbPath?: string,
  *   now?: () => number,
  *   openDb?: (path: string) => import("bun:sqlite").Database,
+ *   sizeOf?: (path: string) => number,
  *   onError?: (error: unknown) => void,
  * }} [options]
  * @returns {{
  *   limits: ReturnType<typeof resolveLimits>,
  *   cap: (input: unknown, output: any) => void,
  *   event: (input: { event?: unknown }) => Promise<void>,
+ *   walGovern: () => { action: "none" | "passive" | "truncate", walSize: number, idle: number, throttled?: boolean } | undefined,
+ *   markWrite: () => void,
  *   dispose: () => Promise<void>,
  *   runPrune: () => { sessions: number, eventsDeleted: number, partsTrimmed: number } | undefined,
  * }}
@@ -486,6 +604,7 @@ export function createCleanup(options = {}) {
   const limits = options.limits ?? resolveLimits()
   const now = options.now ?? (() => Date.now())
   const openDb = options.openDb ?? ((path) => new Database(path, { readwrite: true, create: false }))
+  const sizeOf = options.sizeOf ?? ((p) => statSync(p).size)
   const onError =
     options.onError ??
     ((error) => {
@@ -495,6 +614,8 @@ export function createCleanup(options = {}) {
 
   let db
   let lastRun = 0
+  let lastWalGovern = 0
+  let lastWriteAt = 0
   let running = false
   let dirty = false
 
@@ -504,6 +625,11 @@ export function createCleanup(options = {}) {
     db = openDb(dbPath)
     db.run("PRAGMA busy_timeout = 5000")
     return db
+  }
+
+  /** Record that a DB write just happened, so the WAL governor stays passive. */
+  function markWrite() {
+    lastWriteAt = now()
   }
 
   function runPrune() {
@@ -528,12 +654,50 @@ export function createCleanup(options = {}) {
   }
 
   function cap(_input, output) {
+    markWrite()
     capToolResult(output, limits)
   }
 
-  async function event() {
+  /**
+   * One WAL governor tick, throttled to `walCheckMs`. Cheap and safe to call
+   * from the event fan-out (which also covers active-write pressure) and from a
+   * periodic timer (which covers the idle case, when no events fire).
+   */
+  function walGovern() {
     const stamp = now()
-    if (running || stamp - lastRun < limits.intervalMs) return
+    if (stamp - lastWalGovern < limits.walCheckMs) {
+      return { action: "none", walSize: 0, idle: 0, throttled: true }
+    }
+    lastWalGovern = stamp
+    const handle = connection()
+    if (!handle) return undefined
+    const size = walSize(dbPath, sizeOf)
+    return governWal(handle, {
+      walSizeBytes: size,
+      lastWriteAt,
+      now: stamp,
+      walThreshold: limits.walThreshold,
+      walIdleMs: limits.walIdleMs,
+      debug: limits.debug,
+    })
+  }
+
+  async function event() {
+    // Any event implies recent session activity, so keep the governor passive.
+    markWrite()
+    const stamp = now()
+    try {
+      walGovern()
+    } catch (error) {
+      onError(error)
+    }
+    if (running) return
+    // Regular 6h pass, or an earlier adaptive pass when the WAL is over the
+    // threshold and the floor interval has elapsed (never hammers).
+    const regular = stamp - lastRun >= limits.intervalMs
+    const adaptive =
+      !regular && stamp - lastRun >= limits.pruneFloorMs && walSize(dbPath, sizeOf) > limits.walThreshold
+    if (!regular && !adaptive) return
     running = true
     lastRun = stamp
     try {
@@ -550,6 +714,8 @@ export function createCleanup(options = {}) {
     cap,
     event,
     runPrune,
+    walGovern,
+    markWrite,
     dispose: async () => {
       if (db) {
         // Shutdown: contention is gone, so the blocking reclaim is safe now.

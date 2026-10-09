@@ -15,8 +15,11 @@
  *
  * Delivery is channel-based (DCP-style, orthogonal to whether it is enabled).
  * The channel comes from `OPENCODE_SUBAGENT_COMPLETION_NOTIFY` and defaults to
- * the progress channel (`progressChannel()`), so the two features agree unless
- * completion is overridden:
+ * `inline` — a waking channel — so a follow-up completion ALWAYS reaches the
+ * parent regardless of how progress reports are configured. This is deliberate:
+ * completion and progress are decoupled, because silencing the completion notice
+ * would leave the parent unaware that its queued message finished. The override
+ * still wins:
  *
  *   - `inline` — a visible, non-synthetic text part via `session.promptAsync`
  *     (a full model turn; shown in the parent transcript).
@@ -41,22 +44,25 @@
  */
 
 import { resolveTarget, unwrap } from "./subagent-control.js"
-import { progressChannel } from "./subagent-progress.js"
 
 /** Channels accepted by `OPENCODE_SUBAGENT_COMPLETION_NOTIFY`. */
 const COMPLETION_CHANNELS = new Set(["toast", "chat", "inline", "both", "off"])
 
+/** Default completion channel: waking, so the notice is never silenced. */
+const DEFAULT_COMPLETION_CHANNEL = "inline"
+
 /**
  * Resolve the completion-notice channel. `OPENCODE_SUBAGENT_COMPLETION_NOTIFY`
- * selects it directly; when unset or unrecognized it defaults to the progress
- * channel so completion and progress agree out of the box.
+ * selects it directly; when unset or unrecognized it defaults to `inline`
+ * (waking) so the subagent -> main-agent completion notification is never
+ * silenced by the progress channel.
  *
  * @returns {"toast" | "chat" | "inline" | "both" | "off"}
  */
 export function completionChannel() {
   const explicit = String(process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY ?? "").trim().toLowerCase()
   if (COMPLETION_CHANNELS.has(explicit)) return explicit
-  return progressChannel()
+  return DEFAULT_COMPLETION_CHANNEL
 }
 
 /**
@@ -129,6 +135,8 @@ export function createSubagentCompletion(options = {}) {
   const onError = options.onError
   /** One-shot childID -> parentID registrations armed by `onSend`. */
   const pending = new Map()
+  /** childID -> cached identity, so repeated notices skip the session.get. */
+  const identities = new Map()
 
   /**
    * Record that a follow-up was queued into `childID`, so the child's next idle
@@ -141,18 +149,28 @@ export function createSubagentCompletion(options = {}) {
     pending.set(childID, parentID)
   }
 
-  /** Best-effort child identity (agent/slug/title) for the notice header. */
+  /**
+   * Best-effort child identity (agent/slug/title) for the notice header. The
+   * result is cached per child (mirroring the progress reporter), so a child
+   * announced across several follow-ups costs at most one `session.get`.
+   */
   async function identityOf(sessionID) {
+    if (identities.has(sessionID)) return identities.get(sessionID)
     const api = client?.session
     if (typeof api?.get !== "function") return undefined
     try {
       const info = unwrap(await api.get({ path: { id: sessionID } }))
-      if (!info || typeof info !== "object") return undefined
-      return {
+      if (!info || typeof info !== "object") {
+        identities.set(sessionID, undefined)
+        return undefined
+      }
+      const identity = {
         agent: typeof info.agent === "string" && info.agent ? info.agent : undefined,
         nickname: typeof info.slug === "string" && info.slug ? info.slug : undefined,
         title: typeof info.title === "string" && info.title ? info.title : undefined,
       }
+      identities.set(sessionID, identity)
+      return identity
     } catch {
       return undefined
     }
@@ -251,6 +269,7 @@ export function createSubagentCompletion(options = {}) {
     onSend,
     dispose: async () => {
       pending.clear()
+      identities.clear()
     },
   }
 }

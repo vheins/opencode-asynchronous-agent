@@ -35,15 +35,17 @@ function fakeClient(overrides = {}) {
   return { client, calls }
 }
 
-test("completionChannel reads the new var, defaulting to the progress channel", () => {
+test("completionChannel is decoupled from progress and defaults to inline", () => {
   const prev = { p: process.env.OPENCODE_SUBAGENT_PROGRESS, c: process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY }
   delete process.env.OPENCODE_SUBAGENT_PROGRESS
   delete process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY
-  expect(completionChannel()).toBe("off")
+  // Waking default: never silenced by the progress channel.
+  expect(completionChannel()).toBe("inline")
+  // Changing the progress channel does NOT change completion.
   process.env.OPENCODE_SUBAGENT_PROGRESS = "1"
   expect(completionChannel()).toBe("inline")
   process.env.OPENCODE_SUBAGENT_PROGRESS = "0"
-  expect(completionChannel()).toBe("toast")
+  expect(completionChannel()).toBe("inline")
   process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY = "both"
   expect(completionChannel()).toBe("both")
   process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY = "off"
@@ -157,4 +159,23 @@ test("injects nothing for an unregistered child (initial dispatch is untouched)"
   const completion = createSubagentCompletion({ client, channel: "inline" })
   await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
   expect(calls.promptAsync.length).toBe(0)
+})
+
+test("caches the child identity so repeated follow-ups skip the session.get", async () => {
+  const { client, calls } = fakeClient({
+    sessions: { ses_parent: { id: "ses_parent" }, ses_child: { id: "ses_child", parentID: "ses_parent", agent: "backend", slug: "mighty-island" } },
+  })
+  const completion = createSubagentCompletion({ client, channel: "inline" })
+
+  completion.onSend("ses_parent", "ses_child")
+  await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
+  expect(calls.promptAsync.length).toBe(1)
+  const childGets = () => calls.get.filter((call) => call.path.id === "ses_child").length
+  expect(childGets()).toBe(1)
+
+  // A second follow-up to the SAME child reuses the cached identity.
+  completion.onSend("ses_parent", "ses_child")
+  await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
+  expect(calls.promptAsync.length).toBe(2)
+  expect(childGets()).toBe(1)
 })

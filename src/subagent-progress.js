@@ -18,9 +18,10 @@
  * the same text, so a visible report costs no extra model context.
  *
  * Every injection costs the parent a full model turn, so reports are coalesced:
- * at most one report per child per `intervalMs` (default 120000 ms), and exactly
- * one final report when every todo reaches a terminal state. A child that never
- * calls `todowrite` produces no reports.
+ * at most one report per child per `intervalMs` (default 300000 ms), a per-child
+ * cap of `maxReports` non-final reports (default 5), and exactly one final report
+ * when every todo reaches a terminal state. A child that never calls `todowrite`
+ * produces no reports.
  *
  * Loop safety: only sessions that have a parent (i.e. child sessions) are
  * considered, so the parent's own `todowrite` never re-triggers a report.
@@ -30,7 +31,9 @@
  * `OPENCODE_SUBAGENT_NOTIFICATION_TYPE` (`toast` | `chat` | `inline` | `both` |
  * `off`); when it is unset the legacy `OPENCODE_SUBAGENT_PROGRESS` switch is
  * mapped for backward compatibility (`1`/`true`/`on`/`yes` → `inline`, `0` →
- * `toast`, anything else → `off`).
+ * `toast`, anything else → `off`). When BOTH are unset, reporting defaults to
+ * `chat` — visible in the TUI through the reactive store (which never reads
+ * injected parts), but with no parent model turn.
  *
  *   - `inline` — the report is written into the parent session as a visible text
  *     part (a full model turn; shown in the transcript).
@@ -50,7 +53,13 @@
 import { resolveTarget } from "./subagent-control.js"
 
 /** Default minimum delay (ms) between two progress reports for the same child. */
-export const DEFAULT_PROGRESS_MS = 120000
+export const DEFAULT_PROGRESS_MS = 300000
+
+/** Default max non-final progress reports per child before it goes quiet. */
+export const DEFAULT_PROGRESS_MAX = 5
+
+/** Channel used when neither progress env switch selects one. */
+export const DEFAULT_PROGRESS_CHANNEL = "chat"
 
 /**
  * System-prompt instruction appended to every child (subagent) session so the
@@ -117,17 +126,22 @@ const CHANNELS = new Set(["toast", "chat", "inline", "both", "off"])
  * (`toast` | `chat` | `inline` | `both` | `off`). When it is unset or
  * unrecognized, the legacy `OPENCODE_SUBAGENT_PROGRESS` switch is mapped so
  * existing configurations keep working: truthy → `inline`, `0` → `toast`,
- * unset → `off`.
+ * unrecognized → `off`. When BOTH switches are unset, the default channel is
+ * {@link DEFAULT_PROGRESS_CHANNEL} (`chat`).
  *
  * @returns {"toast" | "chat" | "inline" | "both" | "off"}
  */
 export function progressChannel() {
   const explicit = String(process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE ?? "").trim().toLowerCase()
   if (CHANNELS.has(explicit)) return explicit
-  const legacy = progressMode()
-  if (legacy === "inject") return "inline"
-  if (legacy === "toast") return "toast"
-  return "off"
+  const legacy = String(process.env.OPENCODE_SUBAGENT_PROGRESS ?? "").trim().toLowerCase()
+  if (legacy) {
+    const mapped = progressMode()
+    if (mapped === "inject") return "inline"
+    if (mapped === "toast") return "toast"
+    return "off"
+  }
+  return DEFAULT_PROGRESS_CHANNEL
 }
 
 /**
@@ -151,6 +165,18 @@ function channelFromMode(mode) {
 export function progressIntervalMs() {
   const raw = Number(String(process.env.OPENCODE_SUBAGENT_PROGRESS_MS ?? "").trim())
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_PROGRESS_MS
+}
+
+/**
+ * Configured max non-final progress reports per child. Falls back to
+ * {@link DEFAULT_PROGRESS_MAX} when unset or not a positive number. The final
+ * report is never counted against this cap.
+ *
+ * @returns {number}
+ */
+export function progressMax() {
+  const raw = Number(String(process.env.OPENCODE_SUBAGENT_PROGRESS_MAX ?? "").trim())
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_PROGRESS_MAX
 }
 
 /**
@@ -234,17 +260,20 @@ export function formatProgressToast(input) {
 /**
  * Decide whether a report should be sent for a child, given its per-child state.
  *
- * A final report (all todos terminal) is sent at most once. A non-final report is
- * sent only when the summary changed and the coalescing interval has elapsed.
+ * A final report (all todos terminal) is sent at most once and is never counted
+ * against the cap. A non-final report is sent only when the summary changed, the
+ * coalescing interval has elapsed, and the per-child cap has not been reached.
  *
- * @param {{ lastReportAt: number, lastText: string, finalSent: boolean } | undefined} state
+ * @param {{ lastReportAt: number, lastText: string, finalSent: boolean, count?: number } | undefined} state
  * @param {{ terminal: boolean, text: string }} summary
  * @param {number} now
  * @param {number} intervalMs
+ * @param {number} [maxReports] Max non-final reports per child (default: unlimited).
  * @returns {boolean}
  */
-export function shouldReport(state, summary, now, intervalMs) {
+export function shouldReport(state, summary, now, intervalMs, maxReports = Number.POSITIVE_INFINITY) {
   if (summary.terminal) return !state?.finalSent
+  if ((state?.count ?? 0) >= maxReports) return false
   if (state?.lastText === summary.text) return false
   if (state && now - state.lastReportAt < intervalMs) return false
   return true
@@ -258,6 +287,7 @@ export function shouldReport(state, summary, now, intervalMs) {
  *   client?: object,
  *   now?: () => number,
  *   intervalMs?: number,
+ *   maxReports?: number,
  *   mode?: "inject" | "toast" | "off",
  *   channel?: "toast" | "chat" | "inline" | "both" | "off",
  *   onError?: (error: unknown) => void,
@@ -272,6 +302,7 @@ export function createSubagentProgress(options = {}) {
   const client = options.client
   const now = options.now ?? (() => Date.now())
   const intervalMs = options.intervalMs ?? progressIntervalMs()
+  const maxReports = options.maxReports ?? progressMax()
   const channel = options.channel ?? (options.mode ? channelFromMode(options.mode) : progressChannel())
   const onError = options.onError
   const states = new Map()
@@ -442,7 +473,7 @@ export function createSubagentProgress(options = {}) {
     if (summary.total === 0) return
 
     const state = states.get(sessionID)
-    if (!shouldReport(state, summary, now(), intervalMs)) return
+    if (!shouldReport(state, summary, now(), intervalMs, maxReports)) return
 
     const agent = agents.get(sessionID) ?? (await agentOf(sessionID))
     const nickname = await slugOf(sessionID)
@@ -475,6 +506,7 @@ export function createSubagentProgress(options = {}) {
       lastReportAt: now(),
       lastText: summary.text,
       finalSent: summary.terminal || Boolean(state?.finalSent),
+      count: (state?.count ?? 0) + (summary.terminal ? 0 : 1),
     })
   }
 

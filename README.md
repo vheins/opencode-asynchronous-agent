@@ -175,11 +175,18 @@ All configuration is optional and read from environment variables at setup time.
 | `OPENCODE_SUBAGENT_STALE_MS` | `120000` | Age (ms) after which a still-running child is reported as `stale`. |
 | `OPENCODE_SUBAGENT_CONTROL` | *(off)* | Opt-in. Set to a truthy value to register the four control tools (`subagent_children`, `subagent_result`, `subagent_cancel`, `subagent_send`). |
 | `OPENCODE_SUBAGENT_RESULT_CHARS` | `20000` | Cap for the text `subagent_result` returns. |
-| `OPENCODE_SUBAGENT_PROGRESS` | *(off)* | Progress-report mode. Truthy (`1`/`true`/`on`/`yes`) injects the report into the parent session as a text part; `0`/`false`/`no`/`off` shows a transient TUI toast instead (no model turn). Unset/other values disable it. |
-| `OPENCODE_SUBAGENT_PROGRESS_MS` | `120000` | Minimum interval (ms) between two progress reports for the same child. |
+| `OPENCODE_SUBAGENT_PROGRESS` | *(chat)* | Progress-report mode (legacy). Truthy (`1`/`true`/`on`/`yes`) injects the report into the parent session as a text part; `0`/`false`/`no`/`off` shows a transient TUI toast instead (no model turn); unset/other values disable it. When unset, the default channel is `chat`. |
+| `OPENCODE_SUBAGENT_NOTIFICATION_TYPE` | `chat` | Progress channel: `toast` \| `chat` \| `inline` \| `both` \| `off`. Overrides `OPENCODE_SUBAGENT_PROGRESS`. |
+| `OPENCODE_SUBAGENT_PROGRESS_MS` | `300000` | Minimum interval (ms) between two progress reports for the same child. |
+| `OPENCODE_SUBAGENT_PROGRESS_MAX` | `5` | Max non-final progress reports per child (the final report is never capped). |
+| `OPENCODE_SUBAGENT_COMPLETION_NOTIFY` | `inline` | Completion-notice channel for `subagent_send` follow-ups: `toast` \| `chat` \| `inline` \| `both` \| `off`. Decoupled from the progress channel; defaults to `inline` (waking) so the notice is never silenced. |
 | `OPENCODE_DB_CLEANUP` | *(enabled)* | Set to `0`, `false`, `no`, `off`, or `n` to disable database cleanup entirely. |
 | `OPENCODE_DB_CLEANUP_RETENTION_MS` | `259200000` (3 days) | Sessions untouched for longer than this have their `event` rows deleted and their old `part` tool payloads trimmed. |
 | `OPENCODE_DB_CLEANUP_INTERVAL_MS` | `21600000` (6 h) | Minimum spacing between cleanup runs. |
+| `OPENCODE_DB_CLEANUP_WAL_THRESHOLD` | `67108864` (64 MiB) | WAL size above which the governor issues a `wal_checkpoint(PASSIVE)`, and above which an adaptive prune may run early. |
+| `OPENCODE_DB_CLEANUP_WAL_IDLE_MS` | `15000` | Idle window (ms): with no write this recent, the governor `wal_checkpoint(TRUNCATE)`s the WAL. |
+| `OPENCODE_DB_CLEANUP_WAL_CHECK_MS` | `30000` | Spacing (ms) between WAL governor ticks. |
+| `OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS` | `1800000` (30 min) | Floor delay (ms) between adaptive prune passes triggered by an oversized WAL. |
 | `OPENCODE_DB_CLEANUP_MAX_OUTPUT_CHARS` | `100000` | Write-time cap for a tool part's `state.output`. |
 | `OPENCODE_DB_CLEANUP_MAX_DIFF_CHARS` | `64000` | Write-time cap for edit `metadata.diff`. |
 | `OPENCODE_DB_CLEANUP_MAX_DISPLAY_CHARS` | `64000` | Write-time cap for read `metadata.display.text`. |
@@ -312,33 +319,42 @@ it) and remembers it per session, so the allow/deny lists work on V1 too.
 
 ---
 
-## Subagent progress reports (opt-in, V1 only)
+## Subagent progress reports (V1 only, on by default)
 
 A background subagent runs with no visibility until it finishes. This feature
 gives the parent a live progress stream, driven entirely by events (never
 polling): whenever a child calls `todowrite`, OpenCode emits a `todo.updated`
 event, and the plugin reports it to the parent.
 
-Two delivery modes, chosen by `OPENCODE_SUBAGENT_PROGRESS`:
+Delivery is channel-based, chosen by `OPENCODE_SUBAGENT_NOTIFICATION_TYPE` (with
+the legacy `OPENCODE_SUBAGENT_PROGRESS` still mapped). The **default channel is
+`chat`**: the report is written as a hidden, no-reply part, so the parent pays
+**no model turn** while progress stays visible in the TUI (the sidebar reads the
+reactive session store, never injected parts).
 
-- **Inject** (truthy: `1`/`true`/`on`/`yes`) — the report is written into the
-  parent session via the async prompt endpoint, the same channel OpenCode uses
-  for the completion notice. It is a **visible** text part (not synthetic), so it
-  renders inline in the parent's transcript, headed by an arrow icon, the
-  reporting child agent, the child's session slug (its "nickname"), and the
-  recipient parent, mirroring a tool-call row. Every injection costs the parent a
-  full model turn.
+- **Chat** (default) — a hidden, no-reply session part (`noReply` + `ignored`):
+  no model turn, not shown in the transcript.
+- **Inline** (truthy `OPENCODE_SUBAGENT_PROGRESS`) — the report is written into
+  the parent session via the async prompt endpoint. It is a **visible** text part
+  (not synthetic), so it renders inline in the parent's transcript, headed by an
+  arrow icon, the reporting child agent, the child's session slug (its
+  "nickname"), and the recipient parent, mirroring a tool-call row. Every
+  injection costs the parent a full model turn.
 - **Toast** (`0`/`false`/`no`/`off`) — the report is shown as a transient TUI
   toast instead, so **no model turn is spent** and the parent transcript stays
   clean. The toast title carries the child's identity (`agent · slug · session
   title`) and the message is the title of the `in_progress` todo.
+- **Both** — every channel above fires.
 
-Because every injected report costs the parent a full model turn, reports are
+Because every injected report can cost the parent a full model turn, reports are
 coalesced:
 
 - at most **one report per child per interval** (`OPENCODE_SUBAGENT_PROGRESS_MS`,
-  default 120 s), and
-- exactly **one final report** when every todo is `completed`/`cancelled`.
+  default 300 s),
+- at most **`OPENCODE_SUBAGENT_PROGRESS_MAX` non-final reports per child**
+  (default 5), and
+- exactly **one final report** when every todo is `completed`/`cancelled` (never
+  counted against the cap).
 
 A child that never calls `todowrite` produces no reports, so the plugin also
 appends a short instruction to each child's system prompt telling it to keep its
@@ -362,14 +378,28 @@ Build form
 ```
 
 ```sh
-export OPENCODE_SUBAGENT_PROGRESS=1   # inject into the parent transcript
-export OPENCODE_SUBAGENT_PROGRESS=0   # show a TUI toast instead
+export OPENCODE_SUBAGENT_NOTIFICATION_TYPE=chat    # default: hidden, no model turn
+export OPENCODE_SUBAGENT_NOTIFICATION_TYPE=inline  # inject into the parent transcript
+export OPENCODE_SUBAGENT_PROGRESS=0                # show a TUI toast instead
+export OPENCODE_SUBAGENT_PROGRESS_MAX=5            # cap non-final reports per child
 ```
 
 > **V1 only**, for the same reason as the control tools: the V2 plugin API cannot
 > register event handlers or system-prompt transforms. Loop-safe by construction:
 > only sessions with a parent are considered, so a parent's own `todowrite` never
 > re-triggers a report.
+
+### Completion notices (V1 only, on by default)
+
+OpenCode pushes a completion notice to the parent only for the *initial*
+`background: true` dispatch. A follow-up queued with `subagent_send` has no
+parent tool part, so the plugin emulates the notice on the child's next idle.
+
+Its channel is **decoupled from the progress channel** and defaults to `inline`
+(waking), so a queued follow-up always reaches the parent even when progress is
+silenced or routed to `chat`/`toast`. Override with
+`OPENCODE_SUBAGENT_COMPLETION_NOTIFY` (`toast` | `chat` | `inline` | `both` |
+`off`).
 
 ---
 
@@ -385,36 +415,50 @@ OpenCode's session storage grows without bound. Two mechanisms cause it:
    verbatim in the `part` row, including large `metadata.diagnostics`,
    `metadata.diff`, and `metadata.display.text` blobs.
 
-This plugin ships a cleanup layer that addresses both, in two parts:
+This plugin ships a cleanup layer that addresses both, in three parts:
 
 - **Write-time cap** (`tool.execute.after`): truncates oversized `state.output`,
   `metadata.diff`, `metadata.filediff.patch`, and `metadata.display.text`, and
   empties `metadata.diagnostics` when it exceeds its budget. This prevents new
   bloat at the source. On real data a 117 KB edit metadata blob shrank to 6.5 KB.
+- **WAL governor** (throttled tick, every 30 s, plus the `event` hook): OpenCode
+  core runs its own in-transaction WAL auto-checkpoint (`wal_autocheckpoint`,
+  ~4 MiB by default), which fires inside a write transaction and turns a write
+  into an IO-block storm. The plugin cannot change core's PRAGMA, but it can keep
+  the WAL small so core's auto-checkpoint rarely fires. When the `-wal` sidecar
+  exceeds `OPENCODE_DB_CLEANUP_WAL_THRESHOLD` (default 64 MiB) it issues a
+  non-blocking `wal_checkpoint(PASSIVE)`; once no write has happened for
+  `OPENCODE_DB_CLEANUP_WAL_IDLE_MS` (default 15 s) it issues
+  `wal_checkpoint(TRUNCATE)` to shrink the WAL back to zero. TRUNCATE is **never**
+  issued while a write occurred within the idle window.
 - **Periodic prune** (throttled `event` hook, every 6 h): for sessions untouched
   beyond the retention window, deletes their `event` rows and trims old `part`
   tool payloads to a short preview (setting `state.time.compacted` so the model
   sees the existing `[Old tool result content cleared]` marker). It **never**
   touches `event_sequence`, `session`, or `message` rows, so session resume and
-  compaction keep working.
+  compaction keep working. When the `-wal` exceeds the threshold it may also run
+  **earlier** than 6 h, but never more often than
+  `OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS` (default 30 min), so it never hammers.
 
 Cleanup is **enabled by default** and requires no configuration. Disable it with
 `OPENCODE_DB_CLEANUP=0`. It runs independently of the background-subagent flag
 and is **V1 only** — the V2 plugin API exposes no event or database access.
 
 > **Locking.** A plugin runs inside the same OpenCode process that owns the
-> database, and other sessions write to it concurrently. The live prune path uses
-> only a `wal_checkpoint(PASSIVE)` (never blocks); the blocking
-> `wal_checkpoint(TRUNCATE)` and optional `VACUUM` run at plugin shutdown, when
-> contention is gone. Running `TRUNCATE`/`VACUUM` while sessions are live makes
-> those sessions fail with `SQLiteError: database is locked`.
+> database, and other sessions write to it concurrently. The live paths use only a
+> `wal_checkpoint(PASSIVE)` (never blocks) during active writes; the blocking
+> `wal_checkpoint(TRUNCATE)` is issued only when the process has been write-idle
+> for `OPENCODE_DB_CLEANUP_WAL_IDLE_MS`, and the optional `VACUUM` runs at plugin
+> shutdown, when contention is gone. Running `TRUNCATE`/`VACUUM` while sessions
+> are actively writing makes those sessions fail with
+> `SQLiteError: database is locked`.
 
 > **Reclaiming space.** Deletes free pages inside the DB but do not shrink the
 > file when `auto_vacuum=0` (OpenCode's default). To reclaim file space, either
-> set `OPENCODE_DB_CLEANUP_VACUUM=1` (the `VACUUM` then runs at shutdown), or
-> reclaim the WAL manually with `PRAGMA wal_checkpoint(TRUNCATE)` while no session
-> is running. A multi-GB `-wal` file usually means a long-lived session is pinning
-> it; closing that session lets the next checkpoint truncate it.
+> set `OPENCODE_DB_CLEANUP_VACUUM=1` (the `VACUUM` then runs at shutdown), or let
+> the WAL governor truncate the `-wal` while the process is write-idle. A
+> multi-GB `-wal` file usually means a long-lived session is pinning it; closing
+> that session lets the next quiescent tick truncate it.
 
 ---
 

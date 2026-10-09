@@ -8,6 +8,7 @@ import {
   progressChannel,
   progressEnabled,
   progressIntervalMs,
+  progressMax,
   progressMode,
   shouldReport,
   summarizeTodos,
@@ -48,11 +49,11 @@ const TODOS = [
   { content: "c", status: "pending", priority: "low" },
 ]
 
-test("progressEnabled reads the env gate", () => {
+test("progressEnabled reads the env gate (on by default via chat)", () => {
   const prev = { p: process.env.OPENCODE_SUBAGENT_PROGRESS, t: process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE }
   delete process.env.OPENCODE_SUBAGENT_PROGRESS
   delete process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE
-  expect(progressEnabled()).toBe(false)
+  expect(progressEnabled()).toBe(true)
   process.env.OPENCODE_SUBAGENT_PROGRESS = "1"
   expect(progressEnabled()).toBe(true)
   process.env.OPENCODE_SUBAGENT_PROGRESS = "0"
@@ -70,11 +71,12 @@ test("progressEnabled reads the env gate", () => {
   else process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE = prev.t
 })
 
-test("progressChannel maps the new var, falling back to legacy progress semantics", () => {
+test("progressChannel maps the new var, falling back to legacy progress semantics, else chat", () => {
   const prev = { p: process.env.OPENCODE_SUBAGENT_PROGRESS, t: process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE }
   delete process.env.OPENCODE_SUBAGENT_PROGRESS
   delete process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE
-  expect(progressChannel()).toBe("off")
+  // Neither switch set: the default channel is chat (hidden, no model turn).
+  expect(progressChannel()).toBe("chat")
   // Explicit channel wins.
   for (const value of ["toast", "chat", "inline", "both", "off"]) {
     process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE = value
@@ -87,7 +89,7 @@ test("progressChannel maps the new var, falling back to legacy progress semantic
   process.env.OPENCODE_SUBAGENT_PROGRESS = "0"
   expect(progressChannel()).toBe("toast")
   delete process.env.OPENCODE_SUBAGENT_PROGRESS
-  expect(progressChannel()).toBe("off")
+  expect(progressChannel()).toBe("chat")
   if (prev.p === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS
   else process.env.OPENCODE_SUBAGENT_PROGRESS = prev.p
   if (prev.t === undefined) delete process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE
@@ -113,13 +115,27 @@ test("progressMode maps truthy to inject, falsy to toast, else off", () => {
 test("progressIntervalMs defaults and honors a positive override", () => {
   const prev = process.env.OPENCODE_SUBAGENT_PROGRESS_MS
   delete process.env.OPENCODE_SUBAGENT_PROGRESS_MS
-  expect(progressIntervalMs()).toBe(120000)
+  expect(progressIntervalMs()).toBe(300000)
   process.env.OPENCODE_SUBAGENT_PROGRESS_MS = "30000"
   expect(progressIntervalMs()).toBe(30000)
   process.env.OPENCODE_SUBAGENT_PROGRESS_MS = "0"
-  expect(progressIntervalMs()).toBe(120000)
+  expect(progressIntervalMs()).toBe(300000)
   if (prev === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS_MS
   else process.env.OPENCODE_SUBAGENT_PROGRESS_MS = prev
+})
+
+test("progressMax defaults to 5 and honors a positive override", () => {
+  const prev = process.env.OPENCODE_SUBAGENT_PROGRESS_MAX
+  delete process.env.OPENCODE_SUBAGENT_PROGRESS_MAX
+  expect(progressMax()).toBe(5)
+  process.env.OPENCODE_SUBAGENT_PROGRESS_MAX = "2"
+  expect(progressMax()).toBe(2)
+  process.env.OPENCODE_SUBAGENT_PROGRESS_MAX = "0"
+  expect(progressMax()).toBe(5)
+  process.env.OPENCODE_SUBAGENT_PROGRESS_MAX = "abc"
+  expect(progressMax()).toBe(5)
+  if (prev === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS_MAX
+  else process.env.OPENCODE_SUBAGENT_PROGRESS_MAX = prev
 })
 
 test("isTerminalTodo recognizes completed and cancelled only", () => {
@@ -182,6 +198,28 @@ test("shouldReport sends final once, coalesces non-final by interval", () => {
   const final = { terminal: true, text: "3/3 done" }
   expect(shouldReport(undefined, final, 1000, 120000)).toBe(true)
   expect(shouldReport({ lastReportAt: 1000, lastText: "3/3 done", finalSent: true }, final, 999999, 120000)).toBe(false)
+})
+
+test("shouldReport enforces the per-child cap, never capping the final report", () => {
+  const summary = { terminal: false, text: "6/9 done" }
+  // count already at the cap: no more non-final reports.
+  expect(
+    shouldReport({ lastReportAt: 1000, lastText: "x", finalSent: false, count: 5 }, summary, 999999, 120000, 5),
+  ).toBe(false)
+  // one below the cap: still eligible once the interval elapsed.
+  expect(
+    shouldReport({ lastReportAt: 1000, lastText: "x", finalSent: false, count: 4 }, summary, 999999, 120000, 5),
+  ).toBe(true)
+  // the final report is never counted against the cap.
+  expect(
+    shouldReport(
+      { lastReportAt: 1000, lastText: "x", finalSent: false, count: 5 },
+      { terminal: true, text: "9/9 done" },
+      999999,
+      120000,
+      5,
+    ),
+  ).toBe(true)
 })
 
 test("injects a visible report into the parent when a child updates todos", async () => {
@@ -265,6 +303,25 @@ test("off channel delivers nothing", async () => {
   expect(calls.prompt.length).toBe(0)
 })
 
+test("defaults to the chat channel (hidden, no model turn) when no env selects one", async () => {
+  const prev = { p: process.env.OPENCODE_SUBAGENT_PROGRESS, t: process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE }
+  delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  delete process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE
+  const { client, calls } = fakeClient({
+    sessions: { ses_parent: { id: "ses_parent" }, ses_child: { id: "ses_child", parentID: "ses_parent" } },
+  })
+  const progress = createSubagentProgress({ client, now: () => 1000 })
+  await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
+  expect(calls.promptAsync.length).toBe(0)
+  expect(calls.showToast.length).toBe(0)
+  expect(calls.prompt.length).toBe(1)
+  expect(calls.prompt[0].body.noReply).toBe(true)
+  if (prev.p === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  else process.env.OPENCODE_SUBAGENT_PROGRESS = prev.p
+  if (prev.t === undefined) delete process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE
+  else process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE = prev.t
+})
+
 test("does not inject for a root session (no parent)", async () => {
   const { client, calls } = fakeClient({ sessions: {} })
   const progress = createSubagentProgress({ client, now: () => 1000, channel: "inline" })
@@ -296,6 +353,29 @@ test("coalesces repeated updates within the interval and sends the final once", 
   clock = 999999
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: allDone } } })
   expect(calls.promptAsync.length).toBe(3)
+})
+
+test("caps non-final reports per child but always sends the final one", async () => {
+  const { client, calls } = fakeClient({ sessions: { ses_parent: {} } })
+  let clock = 1000
+  const progress = createSubagentProgress({ client, now: () => clock, intervalMs: 0, maxReports: 1, channel: "inline" })
+  await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_child", parentID: "ses_parent" } } } })
+
+  // First non-final report consumes the single slot.
+  await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
+  expect(calls.promptAsync.length).toBe(1)
+
+  // A later change is suppressed: the cap is reached.
+  clock = 5000
+  await progress.event({
+    event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: [...TODOS, { content: "d", status: "in_progress" }] } },
+  })
+  expect(calls.promptAsync.length).toBe(1)
+
+  // The terminal report bypasses the cap.
+  const allDone = TODOS.map((t) => ({ ...t, status: "completed" }))
+  await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: allDone } } })
+  expect(calls.promptAsync.length).toBe(2)
 })
 
 test("resolves the parent lazily via session.get when no event was seen", async () => {
