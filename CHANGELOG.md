@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-09
+
 ### Added
 
 - TUI status line shows the size of the in-use `opencode.db` in human-readable
   units (KB/MB/GB/TB), read on a slow poll and resolved with the same path logic
   as the cleanup module (FEAT-040).
+
+## [0.12.0] - 2026-10-09
+
+### Added
+
 - DB IO governor: a WAL governor that issues a non-blocking
   `wal_checkpoint(PASSIVE)` once the `-wal` sidecar exceeds
   `OPENCODE_DB_CLEANUP_WAL_THRESHOLD`, and a `wal_checkpoint(TRUNCATE)` only after
@@ -61,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Releases before 0.10.7 predate this changelog._
 
-[Unreleased]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.10.7...v0.11.0
 [0.10.7]: https://github.com/vheins/opencode-asynchronous-agent/releases/tag/v0.10.7
