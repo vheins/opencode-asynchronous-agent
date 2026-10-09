@@ -72,6 +72,9 @@ export const DEFAULT_WAL_CHECK_MS = 30_000
 /** Default floor (ms) between adaptive prune passes once the DB/WAL is over threshold. */
 export const DEFAULT_PRUNE_FLOOR_MS = 30 * 60 * 1000
 
+/** Default max random jitter (ms) added to the floor interval, to de-sync processes. */
+export const DEFAULT_PRUNE_JITTER_MS = 60_000
+
 /** Values accepted as "enabled"/"disabled" for boolean env gates. */
 const TRUTHY = new Set(["1", "true", "yes", "on", "y"])
 const FALSY = new Set(["0", "false", "no", "off", "n"])
@@ -120,6 +123,7 @@ export function envNumber(env, key, fallback) {
  *   walIdleMs: number,
  *   walCheckMs: number,
  *   pruneFloorMs: number,
+ *   pruneJitterMs: number,
  *   vacuum: boolean,
  *   debug: boolean,
  * }}
@@ -143,6 +147,7 @@ export function resolveLimits(env = process.env) {
     walIdleMs: envNumber(env, "OPENCODE_DB_CLEANUP_WAL_IDLE_MS", DEFAULT_WAL_IDLE_MS),
     walCheckMs: envNumber(env, "OPENCODE_DB_CLEANUP_WAL_CHECK_MS", DEFAULT_WAL_CHECK_MS),
     pruneFloorMs: envNumber(env, "OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS", DEFAULT_PRUNE_FLOOR_MS),
+    pruneJitterMs: envNumber(env, "OPENCODE_DB_CLEANUP_PRUNE_JITTER_MS", DEFAULT_PRUNE_JITTER_MS),
     vacuum: TRUTHY.has(String(env.OPENCODE_DB_CLEANUP_VACUUM ?? "").trim().toLowerCase()),
     debug: String(env.OPENCODE_DB_CLEANUP_DEBUG ?? "") === "1",
   }
@@ -368,6 +373,26 @@ export function walSize(dbPath, sizeOf = (p) => statSync(p).size) {
 }
 
 /**
+ * Read the shared WAL sidecar's last-modified time in ms, or `0` when the file
+ * is absent or the path is unusable. Because the WAL file is shared by every
+ * OpenCode process on the same database, its mtime is a GLOBAL "last write"
+ * signal: a write by ANY process bumps it. Best-effort, mirroring {@link walSize}.
+ *
+ * @param {string | undefined} dbPath
+ * @param {(path: string) => number} [mtimeOf]
+ * @returns {number}
+ */
+export function walMtimeMs(dbPath, mtimeOf = (p) => statSync(p).mtimeMs) {
+  const path = walPath(dbPath)
+  if (!path) return 0
+  try {
+    return mtimeOf(path)
+  } catch {
+    return 0
+  }
+}
+
+/**
  * Delete `event` rows and trim `part` rows for sessions inactive longer than
  * the retention window.
  *
@@ -559,13 +584,17 @@ export function checkpointTruncate(db, options = {}) {
  *   now: number,
  *   walThreshold: number,
  *   walIdleMs: number,
+ *   walMtimeMs?: number,
  *   debug?: boolean,
  * }} options
  * @returns {{ action: "none" | "passive" | "truncate", walSize: number, idle: number }}
  */
 export function governWal(db, options) {
   const { walSizeBytes, lastWriteAt, now, walThreshold, walIdleMs, debug } = options
-  const idle = now - lastWriteAt
+  // Idle is GLOBAL: the shared WAL mtime captures writes by ANY process on the
+  // same database, so an idle process never TRUNCATEs while a peer is writing.
+  const walMtimeMs = options.walMtimeMs ?? 0
+  const idle = now - Math.max(lastWriteAt, walMtimeMs)
   if (!(walSizeBytes > 0)) return { action: "none", walSize: walSizeBytes, idle }
   if (idle >= walIdleMs) {
     checkpointTruncate(db, { debug })
@@ -588,6 +617,8 @@ export function governWal(db, options) {
  *   now?: () => number,
  *   openDb?: (path: string) => import("bun:sqlite").Database,
  *   sizeOf?: (path: string) => number,
+ *   mtimeOf?: (path: string) => number,
+ *   random?: () => number,
  *   onError?: (error: unknown) => void,
  * }} [options]
  * @returns {{
@@ -605,6 +636,8 @@ export function createCleanup(options = {}) {
   const now = options.now ?? (() => Date.now())
   const openDb = options.openDb ?? ((path) => new Database(path, { readwrite: true, create: false }))
   const sizeOf = options.sizeOf ?? ((p) => statSync(p).size)
+  const mtimeOf = options.mtimeOf ?? ((p) => statSync(p).mtimeMs)
+  const random = options.random ?? Math.random
   const onError =
     options.onError ??
     ((error) => {
@@ -616,6 +649,8 @@ export function createCleanup(options = {}) {
   let lastRun = 0
   let lastWalGovern = 0
   let lastWriteAt = 0
+  /** Earliest time the next adaptive (floor-interval) prune may run. */
+  let nextAdaptivePruneAt = 0
   let running = false
   let dirty = false
 
@@ -678,6 +713,7 @@ export function createCleanup(options = {}) {
       now: stamp,
       walThreshold: limits.walThreshold,
       walIdleMs: limits.walIdleMs,
+      walMtimeMs: walMtimeMs(dbPath, mtimeOf),
       debug: limits.debug,
     })
   }
@@ -693,13 +729,16 @@ export function createCleanup(options = {}) {
     }
     if (running) return
     // Regular 6h pass, or an earlier adaptive pass when the WAL is over the
-    // threshold and the floor interval has elapsed (never hammers).
+    // threshold and the (jittered) floor interval has elapsed. The jitter
+    // de-synchronizes the 2-5 processes sharing the database so they do not all
+    // prune in lockstep.
     const regular = stamp - lastRun >= limits.intervalMs
     const adaptive =
-      !regular && stamp - lastRun >= limits.pruneFloorMs && walSize(dbPath, sizeOf) > limits.walThreshold
+      !regular && stamp >= nextAdaptivePruneAt && walSize(dbPath, sizeOf) > limits.walThreshold
     if (!regular && !adaptive) return
     running = true
     lastRun = stamp
+    nextAdaptivePruneAt = stamp + limits.pruneFloorMs + Math.floor(random() * limits.pruneJitterMs)
     try {
       runPrune()
     } catch (error) {

@@ -187,6 +187,7 @@ All configuration is optional and read from environment variables at setup time.
 | `OPENCODE_DB_CLEANUP_WAL_IDLE_MS` | `15000` | Idle window (ms): with no write this recent, the governor `wal_checkpoint(TRUNCATE)`s the WAL. |
 | `OPENCODE_DB_CLEANUP_WAL_CHECK_MS` | `30000` | Spacing (ms) between WAL governor ticks. |
 | `OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS` | `1800000` (30 min) | Floor delay (ms) between adaptive prune passes triggered by an oversized WAL. |
+| `OPENCODE_DB_CLEANUP_PRUNE_JITTER_MS` | `60000` (60 s) | Max random jitter (ms) added to the floor interval, so multiple processes on the same DB do not prune in lockstep. |
 | `OPENCODE_DB_CLEANUP_MAX_OUTPUT_CHARS` | `100000` | Write-time cap for a tool part's `state.output`. |
 | `OPENCODE_DB_CLEANUP_MAX_DIFF_CHARS` | `64000` | Write-time cap for edit `metadata.diff`. |
 | `OPENCODE_DB_CLEANUP_MAX_DISPLAY_CHARS` | `64000` | Write-time cap for read `metadata.display.text`. |
@@ -430,7 +431,10 @@ This plugin ships a cleanup layer that addresses both, in three parts:
   non-blocking `wal_checkpoint(PASSIVE)`; once no write has happened for
   `OPENCODE_DB_CLEANUP_WAL_IDLE_MS` (default 15 s) it issues
   `wal_checkpoint(TRUNCATE)` to shrink the WAL back to zero. TRUNCATE is **never**
-  issued while a write occurred within the idle window.
+  issued while a write occurred within the idle window. The idle clock is
+  **global**: it takes the max of this process's last write and the shared
+  `-wal` file mtime, so when 2-5 OpenCode processes share one database a write by
+  ANY of them keeps every governor passive.
 - **Periodic prune** (throttled `event` hook, every 6 h): for sessions untouched
   beyond the retention window, deletes their `event` rows and trims old `part`
   tool payloads to a short preview (setting `state.time.compacted` so the model
@@ -438,7 +442,9 @@ This plugin ships a cleanup layer that addresses both, in three parts:
   touches `event_sequence`, `session`, or `message` rows, so session resume and
   compaction keep working. When the `-wal` exceeds the threshold it may also run
   **earlier** than 6 h, but never more often than
-  `OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS` (default 30 min), so it never hammers.
+  `OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS` (default 30 min) plus a random
+  `OPENCODE_DB_CLEANUP_PRUNE_JITTER_MS` (default 60 s), so concurrent processes
+  de-synchronize and never prune in lockstep.
 
 Cleanup is **enabled by default** and requires no configuration. Disable it with
 `OPENCODE_DB_CLEANUP=0`. It runs independently of the background-subagent flag
@@ -447,11 +453,12 @@ and is **V1 only** — the V2 plugin API exposes no event or database access.
 > **Locking.** A plugin runs inside the same OpenCode process that owns the
 > database, and other sessions write to it concurrently. The live paths use only a
 > `wal_checkpoint(PASSIVE)` (never blocks) during active writes; the blocking
-> `wal_checkpoint(TRUNCATE)` is issued only when the process has been write-idle
-> for `OPENCODE_DB_CLEANUP_WAL_IDLE_MS`, and the optional `VACUUM` runs at plugin
-> shutdown, when contention is gone. Running `TRUNCATE`/`VACUUM` while sessions
-> are actively writing makes those sessions fail with
-> `SQLiteError: database is locked`.
+> `wal_checkpoint(TRUNCATE)` is issued only when the shared database has been
+> write-idle for `OPENCODE_DB_CLEANUP_WAL_IDLE_MS` (the max of this process's last
+> write and the shared `-wal` mtime, so a peer's write also counts), and the
+> optional `VACUUM` runs at plugin shutdown, when contention is gone. Running
+> `TRUNCATE`/`VACUUM` while sessions are actively writing makes those sessions
+> fail with `SQLiteError: database is locked`.
 
 > **Reclaiming space.** Deletes free pages inside the DB but do not shrink the
 > file when `auto_vacuum=0` (OpenCode's default). To reclaim file space, either

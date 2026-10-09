@@ -109,6 +109,9 @@
  *                                           ticks (default 30000).
  *   OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS=...  Floor delay (ms) between adaptive
  *                                           prune passes (default 1800000 = 30m).
+ *   OPENCODE_DB_CLEANUP_PRUNE_JITTER_MS=... Max random jitter (ms) added to the
+ *                                           floor so concurrent processes do not
+ *                                           prune in lockstep (default 60000).
  *   OPENCODE_DB_CLEANUP_MAX_OUTPUT_CHARS=.. Cap for model-visible tool output
  *                                           (default 100000).
  *   OPENCODE_DB_CLEANUP_MAX_DIFF_CHARS=...  Cap for UI-only diff metadata

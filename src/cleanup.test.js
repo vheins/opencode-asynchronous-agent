@@ -15,6 +15,7 @@ import {
   resolveLimits,
   trimPartData,
   truncateMiddle,
+  walMtimeMs,
   walPath,
   walSize,
 } from "./cleanup.js"
@@ -208,6 +209,12 @@ test("walSize returns the sidecar size or 0 when absent", () => {
   expect(walSize(":memory:", () => 4096)).toBe(0)
 })
 
+test("walMtimeMs returns the shared sidecar mtime or 0 when absent", () => {
+  expect(walMtimeMs("/data/opencode.db", () => 123456)).toBe(123456)
+  expect(walMtimeMs("/data/opencode.db", () => { throw new Error("ENOENT") })).toBe(0)
+  expect(walMtimeMs(":memory:", () => 123456)).toBe(0)
+})
+
 test("governWal does nothing without a WAL", () => {
   const db = memoryDb()
   const result = governWal(db, {
@@ -256,6 +263,32 @@ test("governWal TRUNCATEs the WAL once quiescent", () => {
   expect(result.action).toBe("truncate")
 })
 
+test("governWal uses the shared WAL mtime so a peer's write suppresses TRUNCATE", () => {
+  const db = memoryDb()
+  // This process has been idle for 100s, but another process wrote the shared
+  // WAL 5s ago (mtime 95_000) -> global idle is 5s -> TRUNCATE must be suppressed.
+  const active = governWal(db, {
+    walSizeBytes: 1024,
+    lastWriteAt: 0,
+    now: 100_000,
+    walThreshold: DEFAULT_WAL_THRESHOLD,
+    walIdleMs: 15_000,
+    walMtimeMs: 95_000,
+  })
+  expect(active.action).toBe("none")
+
+  // Same local state, but the peer's write is now stale (global idle 100s).
+  const idle = governWal(db, {
+    walSizeBytes: 1024,
+    lastWriteAt: 0,
+    now: 200_000,
+    walThreshold: DEFAULT_WAL_THRESHOLD,
+    walIdleMs: 15_000,
+    walMtimeMs: 95_000,
+  })
+  expect(idle.action).toBe("truncate")
+})
+
 test("resolveDbPath prefers an explicit env override", () => {
   expect(resolveDbPath({ env: { OPENCODE_DB: "/tmp/custom.db" } })).toBe("/tmp/custom.db")
   expect(resolveDbPath({ env: { OPENCODE_DB: ":memory:" } })).toBe(":memory:")
@@ -293,6 +326,7 @@ test("resolveLimits applies env overrides and defaults", () => {
   expect(limits.walIdleMs).toBe(15_000)
   expect(limits.walCheckMs).toBe(30_000)
   expect(limits.pruneFloorMs).toBe(1_800_000)
+  expect(limits.pruneJitterMs).toBe(60_000)
   expect(limits.vacuum).toBe(false)
 })
 
@@ -302,11 +336,13 @@ test("resolveLimits honours WAL governor env overrides", () => {
     OPENCODE_DB_CLEANUP_WAL_IDLE_MS: "5000",
     OPENCODE_DB_CLEANUP_WAL_CHECK_MS: "10000",
     OPENCODE_DB_CLEANUP_PRUNE_FLOOR_MS: "60000",
+    OPENCODE_DB_CLEANUP_PRUNE_JITTER_MS: "15000",
   })
   expect(limits.walThreshold).toBe(1_048_576)
   expect(limits.walIdleMs).toBe(5_000)
   expect(limits.walCheckMs).toBe(10_000)
   expect(limits.pruneFloorMs).toBe(60_000)
+  expect(limits.pruneJitterMs).toBe(15_000)
 })
 
 test("envNumber ignores non-positive and non-numeric values", () => {
@@ -366,6 +402,62 @@ test("createCleanup throttles the WAL governor tick and tracks writes", () => {
   expect(active.action).toBe("passive") // recent write -> passive, never truncate
 })
 
+test("createCleanup uses the shared WAL mtime to suppress a cross-process TRUNCATE", () => {
+  const db = memoryDb()
+  const clock = 1_000_000
+  const cleanup = createCleanup({
+    limits: { ...resolveLimits({}), walCheckMs: 1, walThreshold: 1_000, walIdleMs: 15_000 },
+    dbPath: "/tmp/opencode-global.db",
+    now: () => clock,
+    openDb: () => db,
+    sizeOf: () => 512, // under the threshold: only a TRUNCATE would apply
+    mtimeOf: () => 995_000, // a peer wrote the shared WAL 5s ago
+  })
+
+  // This process has never written, but the peer's recent mtime makes the GLOBAL
+  // idle 5s (< 15s), so TRUNCATE is suppressed. Without the shared-mtime signal
+  // the local idle would be 1_000s and this would (wrongly) TRUNCATE.
+  expect(cleanup.walGovern().action).toBe("none")
+})
+
+test("createCleanup de-synchronizes floor-interval prunes with injectable jitter", async () => {
+  const db = memoryDb()
+  let clock = 1_000_000
+  const cleanup = createCleanup({
+    limits: {
+      ...resolveLimits({}),
+      retentionMs: 1_000,
+      intervalMs: 21_600_000,
+      pruneFloorMs: 1_000,
+      pruneJitterMs: 10_000,
+      partPreviewChars: 100,
+      walThreshold: 1_000,
+      walCheckMs: 1,
+    },
+    dbPath: "/tmp/opencode-jitter.db",
+    now: () => clock,
+    openDb: () => db,
+    sizeOf: () => 5_000,
+    random: () => 1, // deterministic max jitter
+  })
+
+  // Regular pass sets lastRun and schedules the next adaptive prune at
+  // now + floor + full jitter.
+  await cleanup.event({})
+  db.run("INSERT INTO session (id, time_updated) VALUES (?, ?)", ["old", clock - 5_000])
+  db.run("INSERT INTO event (id, aggregate_id, seq) VALUES (?, ?, ?)", ["e1", "old", 1])
+
+  // Past the bare floor but inside the jitter window -> no adaptive prune.
+  clock += 1_500
+  await cleanup.event({})
+  expect(db.query("SELECT COUNT(*) n FROM event").get().n).toBe(1)
+
+  // Past floor + full jitter -> the adaptive prune runs.
+  clock += 10_000
+  await cleanup.event({})
+  expect(db.query("SELECT COUNT(*) n FROM event").get().n).toBe(0)
+})
+
 test("createCleanup runs an adaptive prune when the WAL is over threshold before the interval", async () => {
   const db = memoryDb()
   let clock = 1_000_000
@@ -375,6 +467,7 @@ test("createCleanup runs an adaptive prune when the WAL is over threshold before
       retentionMs: 1_000,
       intervalMs: 21_600_000,
       pruneFloorMs: 1_000,
+      pruneJitterMs: 0,
       partPreviewChars: 100,
       walThreshold: 1_000,
       walCheckMs: 1,
