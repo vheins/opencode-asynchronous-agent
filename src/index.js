@@ -110,7 +110,7 @@
 import { createSubagentStatus, statusEnabled } from "./subagent-status.js"
 import { controlEnabled, createSubagentControl } from "./subagent-control.js"
 import { progressEnabled, createSubagentProgress } from "./subagent-progress.js"
-import { createSubagentCompletion } from "./subagent-completion.js"
+import { completionEnabled, createSubagentCompletion } from "./subagent-completion.js"
 import { cleanupEnabled, createCleanup } from "./cleanup.js"
 
 /** Stable plugin identifier. */
@@ -217,10 +217,12 @@ export async function autoBackgroundPluginV1(ctx) {
   const status = statusEnabled() ? createSubagentStatus({ client: ctx?.client, directory }) : undefined
 
   // Emulated completion notice for `subagent_send` follow-ups: records the
-  // child->parent linkage when a follow-up is queued, then injects one synthetic
-  // completion text into the parent on the child's next idle. Gated by the same
-  // switch as progress reports; when progress is off, nothing is injected.
-  const completion = progressEnabled() ? createSubagentCompletion({ client: ctx?.client }) : undefined
+  // child->parent linkage when a follow-up is queued, then delivers one
+  // completion notice into the parent on the child's next idle. Gated by its own
+  // channel switch (`OPENCODE_SUBAGENT_COMPLETION_NOTIFY`), which defaults to the
+  // progress channel; it is independent of the progress feature so setting the
+  // completion channel alone still constructs it.
+  const completion = completionEnabled() ? createSubagentCompletion({ client: ctx?.client }) : undefined
 
   // Opt-in control tools: list/result/cancel/send for background children. The
   // send path arms the completion notice so a follow-up is announced on idle.

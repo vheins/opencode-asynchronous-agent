@@ -60,6 +60,18 @@ export function completionChannel() {
 }
 
 /**
+ * Whether the completion notice is active in any channel. True when the
+ * resolved channel is anything other than `off`, so
+ * `OPENCODE_SUBAGENT_COMPLETION_NOTIFY` enables the feature on its own —
+ * independent of the progress gate.
+ *
+ * @returns {boolean}
+ */
+export function completionEnabled() {
+  return completionChannel() !== "off"
+}
+
+/**
  * Render the completion notice injected into the parent session.
  *
  * Mirrors the progress-report header style so the parent sees a consistent
