@@ -1445,7 +1445,7 @@ function ResponsiveDock(props) {
   const width = () => Math.max(1, (size().width || 80) - 2);
   const segments = () => {
     const list = [{
-      text: `ASYNC \xB7 v${"0.11.0"}`,
+      text: `Asynchronous Agent \xB7 v${"0.11.0"}`,
       tone: "primary",
       priority: 0
     }, {
@@ -1580,7 +1580,7 @@ function StatusBar(props) {
   const theme = () => props.api.theme.current;
   const now = createClock();
   return (() => {
-    var _el$105 = _$createElement("box"), _el$106 = _$createElement("text"), _el$107 = _$createElement("b"), _el$108 = _$createTextNode(`ASYNC \xB7 v`), _el$111 = _$createElement("text");
+    var _el$105 = _$createElement("box"), _el$106 = _$createElement("text"), _el$107 = _$createElement("b"), _el$108 = _$createTextNode(`Asynchronous Agent \xB7 v`), _el$111 = _$createElement("text");
     _$insertNode(_el$105, _el$106);
     _$insertNode(_el$105, _el$111);
     _$setProp(_el$105, "flexDirection", "row");
@@ -1644,37 +1644,26 @@ var plugin = {
       slots: {
         sidebar_title(_ctx, props) {
           return (() => {
-            var _el$112 = _$createElement("box"), _el$113 = _$createElement("text"), _el$114 = _$createElement("b"), _el$116 = _$createElement("text"), _el$117 = _$createElement("b");
+            var _el$112 = _$createElement("box"), _el$113 = _$createElement("text"), _el$114 = _$createElement("b");
             _$insertNode(_el$112, _el$113);
-            _$insertNode(_el$112, _el$116);
             _$setProp(_el$112, "gap", 1);
             _$setProp(_el$112, "paddingBottom", 1);
             _$insertNode(_el$113, _el$114);
-            _$insertNode(_el$114, _$createTextNode(`ASYNC AGENT / SESSION`));
-            _$insertNode(_el$116, _el$117);
-            _$setProp(_el$116, "wrapMode", "word");
-            _$insert(_el$117, () => props.title);
+            _$setProp(_el$113, "wrapMode", "word");
+            _$insert(_el$114, () => props.title);
             _$insert(_el$112, _$createComponent(Show, {
               get when() {
                 return props.share_url;
               },
               get children() {
-                var _el$118 = _$createElement("text");
-                _$setProp(_el$118, "wrapMode", "char");
-                _$insert(_el$118, () => props.share_url);
-                _$effect((_$p) => _$setProp(_el$118, "fg", api.theme.current.textMuted, _$p));
-                return _el$118;
+                var _el$115 = _$createElement("text");
+                _$setProp(_el$115, "wrapMode", "char");
+                _$insert(_el$115, () => props.share_url);
+                _$effect((_$p) => _$setProp(_el$115, "fg", api.theme.current.textMuted, _$p));
+                return _el$115;
               }
             }), null);
-            _$effect((_p$) => {
-              var _v$31 = api.theme.current.primary, _v$32 = api.theme.current.text;
-              _v$31 !== _p$.e && (_p$.e = _$setProp(_el$113, "fg", _v$31, _p$.e));
-              _v$32 !== _p$.t && (_p$.t = _$setProp(_el$116, "fg", _v$32, _p$.t));
-              return _p$;
-            }, {
-              e: undefined,
-              t: undefined
-            });
+            _$effect((_$p) => _$setProp(_el$113, "fg", api.theme.current.text, _$p));
             return _el$112;
           })();
         },
@@ -1693,9 +1682,9 @@ var plugin = {
         },
         app_bottom() {
           return (() => {
-            var _el$119 = _$createElement("box");
-            _$setProp(_el$119, "flexShrink", 0);
-            _$insert(_el$119, _$createComponent(Show, {
+            var _el$116 = _$createElement("box");
+            _$setProp(_el$116, "flexShrink", 0);
+            _$insert(_el$116, _$createComponent(Show, {
               get when() {
                 return _$memo(() => !!sessionID())() && !sidebarVisible();
               },
@@ -1716,7 +1705,7 @@ var plugin = {
                 });
               }
             }));
-            return _el$119;
+            return _el$116;
           })();
         }
       }

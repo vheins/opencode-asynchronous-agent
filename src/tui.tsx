@@ -729,7 +729,7 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
   const width = () => Math.max(1, (size().width || 80) - 2)
   const segments = (): StatusSegment[] => {
     const list: StatusSegment[] = [
-      { text: `ASYNC · v${__PLUGIN_VERSION__}`, tone: "primary", priority: 0 },
+      { text: `Asynchronous Agent · v${__PLUGIN_VERSION__}`, tone: "primary", priority: 0 },
       { text: ` | ● ${identity().running} run · ✓ ${identity().done} done · ✕ ${identity().error} err · Σ ${identity().total}`, tone: "muted", priority: 0 },
       { text: ` | ${mcpPluginLabel(props.api)}`, tone: "muted", priority: 1 },
     ]
@@ -775,7 +775,7 @@ function StatusBar(props: { api: TuiPluginApi }) {
   const now = createClock()
   return (
     <box flexDirection="row" justifyContent="space-between" backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} width="100%" height={1} flexShrink={0}>
-      <text fg={theme().primary}><b>ASYNC · v{__PLUGIN_VERSION__}</b></text>
+      <text fg={theme().primary}><b>Asynchronous Agent · v{__PLUGIN_VERSION__}</b></text>
       <Show when={size().width >= 65}>
         <text fg={theme().textMuted}>{mcpPluginLabel(props.api)}</text>
       </Show>
@@ -801,7 +801,6 @@ const plugin: TuiPluginModule = {
       slots: {
         sidebar_title(_ctx, props) {
           return <box gap={1} paddingBottom={1}>
-            <text fg={api.theme.current.primary}><b>ASYNC AGENT / SESSION</b></text>
             <text fg={api.theme.current.text} wrapMode="word"><b>{props.title}</b></text>
             <Show when={props.share_url}><text fg={api.theme.current.textMuted} wrapMode="char">{props.share_url}</text></Show>
           </box>
