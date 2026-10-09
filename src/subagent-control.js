@@ -188,12 +188,14 @@ export function resolveTarget(session) {
  * @param {{
  *   client?: object,
  *   resultChars?: number,
+ *   onSend?: (parentID: string, childID: string) => void,
  * }} [options]
  * @returns {{ tool: Record<string, unknown>, dispose: () => Promise<void> }}
  */
 export function createSubagentControl(options = {}) {
   const client = options.client
   const resultChars = options.resultChars ?? envInt("OPENCODE_SUBAGENT_RESULT_CHARS", DEFAULT_RESULT_CHARS)
+  const onSend = typeof options.onSend === "function" ? options.onSend : undefined
 
   const childrenTool = tool({
     description:
@@ -339,9 +341,12 @@ export function createSubagentControl(options = {}) {
         // the prompt against the default agent (e.g. orchestrator) and its model,
         // silently changing the subagent's identity.
         let target = {}
+        let parentID
         if (typeof api?.get === "function") {
           try {
-            target = resolveTarget(unwrap(await api.get({ path: { id: args.sessionID } })))
+            const info = unwrap(await api.get({ path: { id: args.sessionID } }))
+            target = resolveTarget(info)
+            if (info && typeof info.parentID === "string" && info.parentID) parentID = info.parentID
           } catch {
             // Session lookup is best-effort; fall back to the child's defaults.
           }
@@ -350,6 +355,10 @@ export function createSubagentControl(options = {}) {
           path: { id: args.sessionID },
           body: { parts: [{ type: "text", text: args.prompt }], ...target },
         })
+        // Arm the one-shot completion notice: the child's next idle injects a
+        // synthetic completion text into the parent, mirroring core's native
+        // notice for the initial background dispatch.
+        if (parentID) onSend?.(parentID, args.sessionID)
         const identity = target.agent ? ` as ${target.agent}` : ""
         return {
           title: "subagent_send · queued",

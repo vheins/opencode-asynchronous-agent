@@ -110,6 +110,7 @@
 import { createSubagentStatus, statusEnabled } from "./subagent-status.js"
 import { controlEnabled, createSubagentControl } from "./subagent-control.js"
 import { progressEnabled, createSubagentProgress } from "./subagent-progress.js"
+import { createSubagentCompletion } from "./subagent-completion.js"
 import { cleanupEnabled, createCleanup } from "./cleanup.js"
 
 /** Stable plugin identifier. */
@@ -215,8 +216,15 @@ export async function autoBackgroundPluginV1(ctx) {
   // sessions from plugin events and reports running/done/error/stale.
   const status = statusEnabled() ? createSubagentStatus({ client: ctx?.client, directory }) : undefined
 
-  // Opt-in control tools: list/result/cancel/send for background children.
-  const control = controlEnabled() ? createSubagentControl({ client: ctx?.client }) : undefined
+  // Emulated completion notice for `subagent_send` follow-ups: records the
+  // child->parent linkage when a follow-up is queued, then injects one synthetic
+  // completion text into the parent on the child's next idle. Gated by the same
+  // switch as progress reports; when progress is off, nothing is injected.
+  const completion = progressEnabled() ? createSubagentCompletion({ client: ctx?.client }) : undefined
+
+  // Opt-in control tools: list/result/cancel/send for background children. The
+  // send path arms the completion notice so a follow-up is announced on idle.
+  const control = controlEnabled() ? createSubagentControl({ client: ctx?.client, onSend: completion?.onSend }) : undefined
 
   // Opt-in progress reports: inject coalesced todo-based progress from a child
   // into its parent as the child works (event-driven, never polled).
@@ -230,7 +238,8 @@ export async function autoBackgroundPluginV1(ctx) {
     console.error(
       `[opencode-asynchronous-agent] V1 hook active (dir=${directory}, ` +
         `backgroundSupported=${supported}, statusTool=${Boolean(status)}, ` +
-        `controlTools=${Boolean(control)}, progress=${Boolean(progress)}, cleanup=${Boolean(cleanup)})`,
+        `controlTools=${Boolean(control)}, progress=${Boolean(progress)}, ` +
+        `completion=${Boolean(completion)}, cleanup=${Boolean(cleanup)})`,
     )
   }
 
@@ -249,15 +258,15 @@ export async function autoBackgroundPluginV1(ctx) {
     }
   }
 
-  // The `event` hook fans out to every subscriber; compose status + progress + cleanup.
-  const eventSubscribers = [status?.event, progress?.event, cleanup?.event].filter(Boolean)
+  // The `event` hook fans out to every subscriber; compose status + progress + completion + cleanup.
+  const eventSubscribers = [status?.event, progress?.event, completion?.event, cleanup?.event].filter(Boolean)
   if (eventSubscribers.length > 0) {
     hooks.event = async (input) => {
       for (const subscriber of eventSubscribers) await subscriber(input)
     }
   }
 
-  const disposers = [status?.dispose, control?.dispose, progress?.dispose, cleanup?.dispose].filter(Boolean)
+  const disposers = [status?.dispose, control?.dispose, progress?.dispose, completion?.dispose, cleanup?.dispose].filter(Boolean)
   if (disposers.length > 0) {
     hooks.dispose = async () => {
       for (const dispose of disposers) await dispose()
