@@ -2,7 +2,7 @@ import type { TuiPluginApi, TuiPluginModule, TuiThemeCurrent } from "@opencode-a
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type Accessor, type JSX } from "solid-js"
-import { activityDetail, mainTodoProgress, renderBar, sessionMetrics, sidebarActivity, subagentTodoProgress } from "./model"
+import { activityDetail, mainTodoProgress, progressLabel, progressLevel, renderBar, sessionMetrics, sidebarActivity, subagentTodoProgress } from "./model"
 import { elapsedLabel, fetchSubagent } from "./subagent"
 import { inspectWorkspace } from "./workspace"
 
@@ -302,8 +302,29 @@ function useCreatureAnimation(working: Accessor<boolean>) {
   })
 }
 
-type SubagentStatus = "running" | "done" | "error"
+const [barFrame, setBarFrame] = createSignal(0)
+let barTimer: ReturnType<typeof setInterval> | undefined
+let barSubscribers = 0
 
+/**
+ * Reference-counted 260ms tick for the progress bars, gated to active bars. The
+ * single interval starts when the first bar has unfinished work to animate and
+ * stops when every bar goes idle, so no timer runs at rest; callers render at
+ * `frame=0` when inactive.
+ */
+function useBarAnimation(active: Accessor<boolean>) {
+  createEffect(() => {
+    if (!active()) return
+    barSubscribers++
+    if (!barTimer) barTimer = setInterval(() => setBarFrame((frame) => frame + 1), 260)
+    onCleanup(() => {
+      barSubscribers = Math.max(0, barSubscribers - 1)
+      if (barSubscribers === 0 && barTimer) { clearInterval(barTimer); barTimer = undefined }
+    })
+  })
+}
+
+type SubagentStatus = "running" | "done" | "error"
 /** Async status kinds sharing one theme-driven color mapping (aggregate line + rows). */
 type StatusKind = "run" | "done" | "err" | "total"
 
@@ -313,6 +334,17 @@ function statusColor(theme: TuiThemeCurrent, kind: StatusKind) {
   if (kind === "done") return theme.success
   if (kind === "err") return theme.error
   return theme.textMuted
+}
+
+/**
+ * Ramps a progress bar's color from the same status tokens the aggregate uses:
+ * muted while below half, accent from half up, success once complete. The bar's
+ * identity (main vs subagent) is carried by the fill glyphs and label, not the
+ * color, so the two rows stay distinguishable on the shared ramp.
+ */
+function progressColor(theme: TuiThemeCurrent, completed: number, total: number) {
+  const level = progressLevel(completed, total)
+  return level === "done" ? statusColor(theme, "done") : level === "mid" ? statusColor(theme, "run") : theme.textMuted
 }
 
 /** Maps an activity status label to its status kind, if it is one. */
@@ -640,26 +672,32 @@ export function ObservedWait(props: { reason: string; session: string }) {
 /**
  * Two progress bars shown above the Creatures card: the main agent's own todo
  * completion and the cumulative completed/total across every subagent. Both are
- * driven by the same reactive todo store the cards read, so they update live. A
- * fast clock drives the sweeping animation on each bar; the fill boundary always
- * tracks the real completed/total, so motion never distorts the level.
+ * driven by the same reactive todo store the cards read, so they update live.
+ * A shared clock, gated to bars that still have work to animate, drives the
+ * sweep; the fill boundary always tracks the real completed/total, so motion
+ * never distorts the level. Rows with nothing to report collapse away.
  */
 export function ProgressBars(props: { api: TuiPluginApi; id: string }) {
   const theme = () => props.api.theme.current
   const size = useTerminalDimensions()
-  const width = () => Math.max(6, Math.min(30, (size().width || 40) - 8))
-  const frame = createClock(180)
+  const width = () => Math.max(6, Math.min(40, (size().width || 40) - 8))
   const main = createMemo(() => mainTodoProgress(props.api.state.session.todo(props.id)))
   const subs = createMemo(() => subagentTodoProgress(sidebarActivity(props.api, props.id).agents))
+  const showMain = () => main().total > 0
+  const showSubs = () => subs().total > 0
+  // Animate only while a shown bar has work left (or is empty but shimmering);
+  // hidden rows never start the clock, and it stops once every bar is done.
+  const animating = () => (showMain() && main().fraction < 1) || (showSubs() && subs().fraction < 1)
+  useBarAnimation(animating)
+  const frame = () => (animating() ? barFrame() : 0)
+  const row = (completed: number, total: number) =>
+    <box flexDirection="row">
+      <text fg={progressColor(theme(), completed, total)} wrapMode="none">{renderBar(total > 0 ? completed / total : 0, width(), frame())}</text>
+      <text fg={theme().textMuted} wrapMode="none">{`  ${progressLabel(completed, total)}`}</text>
+    </box>
   return <box>
-    <box flexDirection="row">
-      <text fg={theme().primary} wrapMode="none">{renderBar(main().fraction, width(), frame())}</text>
-      <text fg={theme().textMuted} wrapMode="none">{`  ${main().completed}/${main().total}`}</text>
-    </box>
-    <box flexDirection="row">
-      <text fg={theme().accent} wrapMode="none">{renderBar(subs().fraction, width(), frame())}</text>
-      <text fg={theme().textMuted} wrapMode="none">{`  ${subs().completed}/${subs().total}`}</text>
-    </box>
+    <Show when={showMain()}>{row(main().completed, main().total)}</Show>
+    <Show when={showSubs()}>{row(subs().completed, subs().total)}</Show>
   </box>
 }
 

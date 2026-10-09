@@ -112,15 +112,22 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
   }
 }
 
+/** Eighth-block ramp for the fractional boundary cell (index = eighths filled). */
+const eighthBlocks = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"]
+
 /**
  * Renders a block progress bar of `width` cells filled by `fraction` (0..1),
  * clamped so an empty list yields a fully empty bar and overflow a full one.
  *
  * The fill boundary always reflects `fraction` (completed/total); `frame` adds
  * a brighter window that sweeps across the filled region so a live bar reads as
- * loading without changing the level it reports. Cells before the boundary are
- * the medium shade, the sweeping window the full block, and the remainder the
- * light shade.
+ * loading without changing the level it reports. Whole filled cells use the
+ * medium shade, the sweeping window the full block, and the fractional boundary
+ * cell an eighth-block glyph for sub-cell resolution.
+ *
+ * When nothing is filled yet the bar shimmers: a subtle pulse crosses the empty
+ * track so a started-but-empty bar reads as "no progress yet". At `frame` 0 the
+ * pulse is off-screen, so a resting bar renders as a plain empty track.
  *
  * @param {number} fraction
  * @param {number} width
@@ -130,18 +137,62 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
 export function renderBar(fraction: number, width: number, frame = 0): string {
   const cells = Math.max(1, Math.floor(width))
   const ratio = Number.isFinite(fraction) ? Math.min(1, Math.max(0, fraction)) : 0
-  const filled = Math.round(ratio * cells)
-  if (filled <= 0) return "░".repeat(cells)
+  const exact = ratio * cells
+  let filled = Math.floor(exact)
+  let boundary = Math.round((exact - filled) * 8)
+  if (boundary === 8) { filled += 1; boundary = 0 }
   const window = Math.max(1, Math.round(cells / 4))
-  const span = filled + window - 1
-  const head = ((Math.floor(Number.isFinite(frame) ? frame : 0) % span) + span) % span - window + 1
+  const safeFrame = Number.isFinite(frame) ? Math.floor(frame) : 0
+  if (filled <= 0 && boundary === 0) {
+    const span = cells + window
+    const head = (((safeFrame % span) + span) % span) - window
+    let shimmer = ""
+    for (let index = 0; index < cells; index++) {
+      shimmer += index >= head && index < head + window ? "▒" : "░"
+    }
+    return shimmer
+  }
+  const span = Math.max(1, filled + window - 1)
+  const head = ((safeFrame % span) + span) % span - window + 1
   let bar = ""
   for (let index = 0; index < cells; index++) {
-    if (index >= filled) bar += "░"
-    else if (index >= head && index < head + window) bar += "█"
-    else bar += "▓"
+    if (index < filled) bar += index >= head && index < head + window ? "█" : "▓"
+    else if (index === filled && boundary > 0) bar += eighthBlocks[boundary]
+    else bar += "░"
   }
   return bar
+}
+
+/**
+ * Formats a progress label as `completed/total · NN%`, or an em dash when there
+ * is nothing to report (`total` is zero), so a hidden/empty bar never shows
+ * a misleading `0/0 · 0%`.
+ *
+ * @param {number} completed
+ * @param {number} total
+ * @returns {string}
+ */
+export function progressLabel(completed: number, total: number): string {
+  if (total <= 0) return "—"
+  return `${completed}/${total} · ${Math.round((completed / total) * 100)}%`
+}
+
+/** Coarse progress level used to ramp the bar color: low -> mid -> done. */
+export type ProgressLevel = "low" | "mid" | "done"
+
+/**
+ * Classifies progress into the color ramp: `low` before half done, `mid` from
+ * half up to (but not including) complete, and `done` at 100%. An empty list
+ * (`total <= 0`) reads as `low`.
+ *
+ * @param {number} completed
+ * @param {number} total
+ * @returns {ProgressLevel}
+ */
+export function progressLevel(completed: number, total: number): ProgressLevel {
+  if (total <= 0) return "low"
+  if (completed >= total) return "done"
+  return completed / total >= 0.5 ? "mid" : "low"
 }
 
 /**

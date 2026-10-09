@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mainTodoProgress, renderBar, sidebarActivity, subagentTodoProgress } from "./model"
+import { mainTodoProgress, progressLabel, progressLevel, renderBar, sidebarActivity, subagentTodoProgress } from "./model"
 
 function fakeApi(status: { type: string } | undefined, todos: { status: string }[] = []) {
   const part = {
@@ -111,12 +111,51 @@ test("renderBar fills to the fraction boundary and never exceeds the width", () 
   expect(renderBar(-1, 4, 0)).toBe("░░░░")
 })
 
+test("renderBar renders the fractional boundary cell with an eighth-block glyph", () => {
+  // 0.05 * 10 = 0.5 cells -> boundary at 4/8 = "▌".
+  expect(renderBar(0.05, 10, 0)).toBe("▌" + "░".repeat(9))
+  // 0.02 * 10 = 0.2 cells -> boundary at 2/8 = "▎".
+  expect(renderBar(0.02, 10, 0)).toBe("▎" + "░".repeat(9))
+  // 0.045 * 10 = 0.45 cells -> boundary at 4/8 = "▌".
+  expect(renderBar(0.045, 10, 0)[0]).toBe("▌")
+  // Just under a whole cell stays on the ramp, never promotes early.
+  const ramp = renderBar(0.09, 10, 0)
+  expect(ramp).toHaveLength(10)
+  expect(ramp[0]).toBe("▉")
+  expect(ramp[0]).not.toBe("█")
+})
+
+test("renderBar shimmers a shown-but-empty bar and rests at frame 0", () => {
+  const rest = renderBar(0, 12, 0)
+  expect(rest).toBe("░".repeat(12))
+  const shimmer = renderBar(0, 12, 6)
+  expect(shimmer).toHaveLength(12)
+  expect(shimmer).not.toBe(rest)
+  expect([...shimmer].filter((cell) => cell === "▒")).toHaveLength(3)
+  // A partially filled bar does not shimmer in its empty tail.
+  expect(renderBar(0.5, 12, 6)).not.toContain("▒")
+})
+
 test("renderBar animates the filled region without changing its level", () => {
   const filledCount = (bar: string) => [...bar].filter((cell) => cell !== "░").length
   const first = renderBar(0.6, 12, 0)
   const later = renderBar(0.6, 12, 3)
   expect(filledCount(first)).toBe(filledCount(later))
   expect(first).not.toBe(later)
+})
+
+test("progressLabel formats completed/total with percent, or an em dash when empty", () => {
+  expect(progressLabel(0, 0)).toBe("—")
+  expect(progressLabel(3, 5)).toBe("3/5 · 60%")
+  expect(progressLabel(4, 4)).toBe("4/4 · 100%")
+})
+
+test("progressLevel ramps low -> mid -> done and treats an empty list as low", () => {
+  expect(progressLevel(0, 0)).toBe("low")
+  expect(progressLevel(1, 4)).toBe("low")
+  expect(progressLevel(2, 4)).toBe("mid")
+  expect(progressLevel(3, 4)).toBe("mid")
+  expect(progressLevel(4, 4)).toBe("done")
 })
 
 test("mainTodoProgress reports completed over the session's own todos", () => {

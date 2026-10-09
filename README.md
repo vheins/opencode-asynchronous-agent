@@ -34,12 +34,16 @@ top of the sidebar. A finished card freezes its elapsed time at the child's last
 activity instead of ticking forever. Clicking a subagent card navigates to that
 subagent's session.
 
-Above the `Creatures` card sit two animated progress bars, both labelled only by
-their `completed/total` counts: the main agent's own todo completion, and the
-cumulative completion across the **currently active** subagents only (finished
-children are excluded so they stop inflating the total). Each bar's fill tracks
-the real ratio; a slow sweep highlights the filled region so a live bar reads as
-loading without changing the level it reports.
+Above the `Creatures` card sit two animated progress bars: the main agent's own
+todo completion, and the cumulative completion across the **currently active**
+subagents only (finished children are excluded so they stop inflating the total).
+Each bar is labelled `completed/total · NN%` and its fill tracks the real ratio
+with sub-cell (eighth-block) precision; the color ramps from muted through accent
+to success as progress rises, and a slow sweep highlights the filled region so a
+live bar reads as loading without changing the level it reports. A bar with
+nothing to report (`total` 0) collapses entirely, and the shared animation clock
+stops whenever no bar has work left. The bar width scales with the terminal
+between a sane minimum and maximum.
 The `app_bottom` line mirrors the aggregate when the sidebar is collapsed. Status
 segments are color-coded from the active theme: run (`accent`), done (`success`),
 err (`error`), total (`textMuted`).
