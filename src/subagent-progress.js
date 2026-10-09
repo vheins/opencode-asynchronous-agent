@@ -25,17 +25,24 @@
  * Loop safety: only sessions that have a parent (i.e. child sessions) are
  * considered, so the parent's own `todowrite` never re-triggers a report.
  *
- * Two delivery modes, selected by `OPENCODE_SUBAGENT_PROGRESS`:
+ * Delivery is split into two orthogonal dimensions, DCP-style: whether reports
+ * are enabled, and which CHANNEL carries them. The channel comes from
+ * `OPENCODE_SUBAGENT_NOTIFICATION_TYPE` (`toast` | `chat` | `inline` | `both` |
+ * `off`); when it is unset the legacy `OPENCODE_SUBAGENT_PROGRESS` switch is
+ * mapped for backward compatibility (`1`/`true`/`on`/`yes` → `inline`, `0` →
+ * `toast`, anything else → `off`).
  *
- *   - `1` / `true` / `on` / `yes` → **inject**: the report is written into the
- *     parent session as a text part (a full model turn; visible in the
- *     transcript).
- *   - `0` → **toast**: the report is shown as a transient TUI toast instead, so
- *     no model turn is spent and the parent transcript stays clean. The toast
- *     title carries the child's identity (`agent · slug · session title`) and
- *     the message carries the `in_progress` todo title.
+ *   - `inline` — the report is written into the parent session as a visible text
+ *     part (a full model turn; shown in the transcript).
+ *   - `toast`  — the report is shown as a transient TUI toast, so no model turn
+ *     is spent and the transcript stays clean. The title carries the child's
+ *     identity (`agent · slug · session title`) and the message the active todo.
+ *   - `chat`   — the report is written as a hidden, no-reply session part
+ *     (`noReply` + `ignored`): no model turn, not shown in the transcript.
+ *   - `both`   — every channel above fires.
  *
- * Any other value leaves progress reporting off.
+ * The channels are independent: `both` fires all of them, and a single channel
+ * fires only itself.
  *
  * @module subagent-progress
  */
@@ -90,12 +97,49 @@ export function progressMode() {
 }
 
 /**
- * Whether progress reporting is active in either mode (inject or toast).
+ * Whether progress reporting is active in any channel. True when the resolved
+ * channel is anything other than `off`, so the new
+ * `OPENCODE_SUBAGENT_NOTIFICATION_TYPE` switch enables reporting on its own.
  *
  * @returns {boolean}
  */
 export function progressEnabled() {
-  return progressMode() !== "off"
+  return progressChannel() !== "off"
+}
+
+/** Channels accepted by `OPENCODE_SUBAGENT_NOTIFICATION_TYPE`. */
+const CHANNELS = new Set(["toast", "chat", "inline", "both", "off"])
+
+/**
+ * Resolve the delivery channel, orthogonal to whether reporting is enabled.
+ *
+ * `OPENCODE_SUBAGENT_NOTIFICATION_TYPE` selects the channel directly
+ * (`toast` | `chat` | `inline` | `both` | `off`). When it is unset or
+ * unrecognized, the legacy `OPENCODE_SUBAGENT_PROGRESS` switch is mapped so
+ * existing configurations keep working: truthy → `inline`, `0` → `toast`,
+ * unset → `off`.
+ *
+ * @returns {"toast" | "chat" | "inline" | "both" | "off"}
+ */
+export function progressChannel() {
+  const explicit = String(process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE ?? "").trim().toLowerCase()
+  if (CHANNELS.has(explicit)) return explicit
+  const legacy = progressMode()
+  if (legacy === "inject") return "inline"
+  if (legacy === "toast") return "toast"
+  return "off"
+}
+
+/**
+ * Map a legacy `progressMode()` value onto the channel vocabulary.
+ *
+ * @param {"inject" | "toast" | "off"} mode
+ * @returns {"inline" | "toast" | "off"}
+ */
+function channelFromMode(mode) {
+  if (mode === "inject") return "inline"
+  if (mode === "toast") return "toast"
+  return "off"
 }
 
 /**
@@ -214,6 +258,8 @@ export function shouldReport(state, summary, now, intervalMs) {
  *   client?: object,
  *   now?: () => number,
  *   intervalMs?: number,
+ *   mode?: "inject" | "toast" | "off",
+ *   channel?: "toast" | "chat" | "inline" | "both" | "off",
  *   onError?: (error: unknown) => void,
  * }} [options]
  * @returns {{
@@ -226,7 +272,7 @@ export function createSubagentProgress(options = {}) {
   const client = options.client
   const now = options.now ?? (() => Date.now())
   const intervalMs = options.intervalMs ?? progressIntervalMs()
-  const mode = options.mode ?? progressMode()
+  const channel = options.channel ?? (options.mode ? channelFromMode(options.mode) : progressChannel())
   const onError = options.onError
   const states = new Map()
   const parents = new Map()
@@ -359,6 +405,21 @@ export function createSubagentProgress(options = {}) {
     return true
   }
 
+  /**
+   * Cheap chat-channel delivery: a hidden, no-reply session part (`noReply` +
+   * `ignored`). Unlike {@link inject} it spends no model turn and is not shown
+   * in the parent transcript. Mirrors DCP's `sendIgnoredMessage`.
+   */
+  async function chat(parentID, text) {
+    const api = client?.session
+    if (typeof api?.prompt !== "function") return false
+    await api.prompt({
+      path: { id: parentID },
+      body: { noReply: true, parts: [{ type: "text", text, ignored: true }] },
+    })
+    return true
+  }
+
   /** Handle one plugin event. */
   async function event(input) {
     const evt = input?.event
@@ -386,17 +447,25 @@ export function createSubagentProgress(options = {}) {
     const agent = agents.get(sessionID) ?? (await agentOf(sessionID))
     const nickname = await slugOf(sessionID)
     try {
-      if (mode === "toast") {
+      // Independent channels (DCP-style): `both` fires each, a single channel
+      // fires only itself. A channel whose SDK surface is missing is a no-op.
+      let sent = false
+      if (channel === "toast" || channel === "both") {
         const title = await titleOf(sessionID)
         const payload = formatProgressToast({ sessionID, agent, nickname, title, todos })
-        const sent = await toast(payload)
-        if (!sent) return
-      } else {
+        sent = (await toast(payload)) || sent
+      }
+      if (channel === "inline" || channel === "both") {
         const parentAgent = agents.get(parentID)
         const text = formatProgressReport({ sessionID, agent, nickname, parentAgent, parentID, title: props.title, todos })
-        const sent = await inject(parentID, text)
-        if (!sent) return
+        sent = (await inject(parentID, text)) || sent
       }
+      if (channel === "chat" || channel === "both") {
+        const parentAgent = agents.get(parentID)
+        const text = formatProgressReport({ sessionID, agent, nickname, parentAgent, parentID, title: props.title, todos })
+        sent = (await chat(parentID, text)) || sent
+      }
+      if (!sent) return
     } catch (error) {
       onError?.(error)
       return

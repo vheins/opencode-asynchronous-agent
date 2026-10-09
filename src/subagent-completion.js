@@ -9,11 +9,21 @@
  *
  * This module emulates that missing notice without a core change. When
  * `subagent_send` queues a prompt it records `childID -> parentID`; on the
- * child's next `session.idle` (or `session.status{type:"idle"}`) it injects a
- * completion text into the parent via `session.promptAsync` — the same channel
- * OpenCode uses for its native notice. The part is sent NON-synthetic (matching
- * `subagent-progress.js`), so it stays visible in the parent's TUI transcript: a
- * synthetic part is hidden, which would defeat the notice's purpose.
+ * child's next `session.idle` (or `session.status{type:"idle"}`) it delivers a
+ * completion notice to the parent over the configured channel — the same
+ * channels `subagent-progress.js` uses.
+ *
+ * Delivery is channel-based (DCP-style, orthogonal to whether it is enabled).
+ * The channel comes from `OPENCODE_SUBAGENT_COMPLETION_NOTIFY` and defaults to
+ * the progress channel (`progressChannel()`), so the two features agree unless
+ * completion is overridden:
+ *
+ *   - `inline` — a visible, non-synthetic text part via `session.promptAsync`
+ *     (a full model turn; shown in the parent transcript).
+ *   - `toast`  — a transient TUI toast via `client.tui.showToast`.
+ *   - `chat`   — a hidden, no-reply part (`noReply` + `ignored`): no model turn.
+ *   - `both`   — every channel above fires.
+ *   - `off`    — no notice is delivered.
  *
  * The registration is one-shot: it is cleared the moment the notice fires, so a
  * reused child session is announced exactly once per follow-up (not on every
@@ -21,17 +31,36 @@
  * createSubagentCompletion}'s `onSend` are ever announced, so the initial
  * background dispatch is untouched (no double notice).
  *
- * Gated by the existing progress feature switch (`OPENCODE_SUBAGENT_PROGRESS`
- * via `progressEnabled()`): when that resolves to `off`, no notice is injected.
+ * Runtime overlap: `src/tui.tsx` (`subagentToasts`) also shows a toast, but on a
+ * different surface — the TUI's own `api.ui.toast` (gated by
+ * `OPENCODE_SUBAGENT_NOTIFY`), not the server's `client.tui.showToast`. The two
+ * run in separate processes and cannot see each other's notices, so the `toast`
+ * channel here never double-fires the TUI toast.
  *
  * @module subagent-completion
  */
 
 import { resolveTarget, unwrap } from "./subagent-control.js"
-import { progressEnabled } from "./subagent-progress.js"
+import { progressChannel } from "./subagent-progress.js"
+
+/** Channels accepted by `OPENCODE_SUBAGENT_COMPLETION_NOTIFY`. */
+const COMPLETION_CHANNELS = new Set(["toast", "chat", "inline", "both", "off"])
 
 /**
- * Render the synthetic completion notice injected into the parent session.
+ * Resolve the completion-notice channel. `OPENCODE_SUBAGENT_COMPLETION_NOTIFY`
+ * selects it directly; when unset or unrecognized it defaults to the progress
+ * channel so completion and progress agree out of the box.
+ *
+ * @returns {"toast" | "chat" | "inline" | "both" | "off"}
+ */
+export function completionChannel() {
+  const explicit = String(process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY ?? "").trim().toLowerCase()
+  if (COMPLETION_CHANNELS.has(explicit)) return explicit
+  return progressChannel()
+}
+
+/**
+ * Render the completion notice injected into the parent session.
  *
  * Mirrors the progress-report header style so the parent sees a consistent
  * child identity, and states the follow-up completed plus how to read the
@@ -53,12 +82,26 @@ export function formatCompletionNotice(input) {
 }
 
 /**
+ * Render the completion notice as a TUI toast payload (the `toast` channel).
+ *
+ * @param {{ sessionID?: string, agent?: string, nickname?: string, title?: string }} input
+ * @returns {{ title: string, message: string, variant: "info" }}
+ */
+export function formatCompletionToast(input) {
+  const reporter = input?.agent || input?.sessionID || "subagent"
+  const nickname = input?.nickname ? ` · ${input.nickname}` : ""
+  const title = input?.title ? ` · ${input.title}` : ""
+  return { title: `⤷ ${reporter}${nickname}${title}`, message: "follow-up completed", variant: "info" }
+}
+
+/**
  * Create the completion-notice feature: an `event` subscriber plus an `onSend`
  * registrar called from the `subagent_send` tool path.
  *
  * @param {{
  *   client?: object,
  *   enabled?: boolean,
+ *   channel?: "toast" | "chat" | "inline" | "both" | "off",
  *   onError?: (error: unknown) => void,
  * }} [options]
  * @returns {{
@@ -69,7 +112,8 @@ export function formatCompletionNotice(input) {
  */
 export function createSubagentCompletion(options = {}) {
   const client = options.client
-  const enabled = options.enabled ?? progressEnabled()
+  const channel = options.channel ?? completionChannel()
+  const enabled = options.enabled ?? channel !== "off"
   const onError = options.onError
   /** One-shot childID -> parentID registrations armed by `onSend`. */
   const pending = new Map()
@@ -103,10 +147,11 @@ export function createSubagentCompletion(options = {}) {
   }
 
   /**
-   * Inject the completion notice into the parent session. The parent's own
-   * agent/model is preserved so the notice does not rewrite its identity.
+   * Inline channel: inject the notice into the parent session as a visible text
+   * part. The parent's own agent/model is preserved so the notice does not
+   * rewrite its identity.
    */
-  async function notify(parentID, childID) {
+  async function notifyInline(parentID, childID) {
     const api = client?.session
     if (typeof api?.promptAsync !== "function") return false
     let target = {}
@@ -128,6 +173,41 @@ export function createSubagentCompletion(options = {}) {
     return true
   }
 
+  /** Chat channel: a hidden, no-reply session part (no model turn). */
+  async function notifyChat(parentID, childID) {
+    const api = client?.session
+    if (typeof api?.prompt !== "function") return false
+    const child = await identityOf(childID)
+    const text = formatCompletionNotice({ sessionID: childID, ...child })
+    await api.prompt({
+      path: { id: parentID },
+      body: { noReply: true, parts: [{ type: "text", text, ignored: true }] },
+    })
+    return true
+  }
+
+  /** Toast channel: a transient TUI toast (no model turn, not in transcript). */
+  async function notifyToast(childID) {
+    const api = client?.tui
+    if (typeof api?.showToast !== "function") return false
+    const child = await identityOf(childID)
+    const payload = formatCompletionToast({ sessionID: childID, ...child })
+    await api.showToast({ body: { ...payload, duration: 5000 } })
+    return true
+  }
+
+  /**
+   * Deliver the notice over the configured channel(s). Channels are independent
+   * (DCP-style): `both` fires each, a single channel fires only itself.
+   */
+  async function dispatch(parentID, childID) {
+    let sent = false
+    if (channel === "toast" || channel === "both") sent = (await notifyToast(childID)) || sent
+    if (channel === "inline" || channel === "both") sent = (await notifyInline(parentID, childID)) || sent
+    if (channel === "chat" || channel === "both") sent = (await notifyChat(parentID, childID)) || sent
+    return sent
+  }
+
   /** Map-based dispatch: resolve the child session id from an idle event. */
   const handlers = new Map([
     ["session.idle", (props) => props.sessionID],
@@ -145,10 +225,10 @@ export function createSubagentCompletion(options = {}) {
     if (typeof childID !== "string" || !childID) return
     const parentID = pending.get(childID)
     if (!parentID) return
-    // One-shot: clear before injecting so a throw cannot re-fire on a later idle.
+    // One-shot: clear before dispatching so a throw cannot re-fire on a later idle.
     pending.delete(childID)
     try {
-      await notify(parentID, childID)
+      await dispatch(parentID, childID)
     } catch (error) {
       onError?.(error)
     }

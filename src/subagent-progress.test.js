@@ -5,6 +5,7 @@ import {
   formatProgressReport,
   formatProgressToast,
   isTerminalTodo,
+  progressChannel,
   progressEnabled,
   progressIntervalMs,
   progressMode,
@@ -12,9 +13,9 @@ import {
   summarizeTodos,
 } from "./subagent-progress.js"
 
-/** Fake SDK client capturing promptAsync/showToast calls and returning canned session info. */
+/** Fake SDK client capturing promptAsync/prompt/showToast calls and returning canned session info. */
 function fakeClient(overrides = {}) {
-  const calls = { promptAsync: [], get: [], showToast: [] }
+  const calls = { promptAsync: [], prompt: [], get: [], showToast: [] }
   const sessions = overrides.sessions ?? {}
   const client = {
     session: {
@@ -24,6 +25,10 @@ function fakeClient(overrides = {}) {
       },
       promptAsync: async (input) => {
         calls.promptAsync.push(input)
+        return { data: undefined }
+      },
+      prompt: async (input) => {
+        calls.prompt.push(input)
         return { data: undefined }
       },
     },
@@ -44,8 +49,9 @@ const TODOS = [
 ]
 
 test("progressEnabled reads the env gate", () => {
-  const prev = process.env.OPENCODE_SUBAGENT_PROGRESS
+  const prev = { p: process.env.OPENCODE_SUBAGENT_PROGRESS, t: process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE }
   delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  delete process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE
   expect(progressEnabled()).toBe(false)
   process.env.OPENCODE_SUBAGENT_PROGRESS = "1"
   expect(progressEnabled()).toBe(true)
@@ -53,8 +59,39 @@ test("progressEnabled reads the env gate", () => {
   expect(progressEnabled()).toBe(true)
   process.env.OPENCODE_SUBAGENT_PROGRESS = "maybe"
   expect(progressEnabled()).toBe(false)
-  if (prev === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS
-  else process.env.OPENCODE_SUBAGENT_PROGRESS = prev
+  // The new channel switch enables reporting on its own.
+  process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE = "both"
+  expect(progressEnabled()).toBe(true)
+  process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE = "off"
+  expect(progressEnabled()).toBe(false)
+  if (prev.p === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  else process.env.OPENCODE_SUBAGENT_PROGRESS = prev.p
+  if (prev.t === undefined) delete process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE
+  else process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE = prev.t
+})
+
+test("progressChannel maps the new var, falling back to legacy progress semantics", () => {
+  const prev = { p: process.env.OPENCODE_SUBAGENT_PROGRESS, t: process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE }
+  delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  delete process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE
+  expect(progressChannel()).toBe("off")
+  // Explicit channel wins.
+  for (const value of ["toast", "chat", "inline", "both", "off"]) {
+    process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE = value
+    expect(progressChannel()).toBe(value)
+  }
+  // Unset/unrecognized falls back to the legacy switch.
+  process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE = "nah"
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "1"
+  expect(progressChannel()).toBe("inline")
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "0"
+  expect(progressChannel()).toBe("toast")
+  delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  expect(progressChannel()).toBe("off")
+  if (prev.p === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  else process.env.OPENCODE_SUBAGENT_PROGRESS = prev.p
+  if (prev.t === undefined) delete process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE
+  else process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE = prev.t
 })
 
 test("progressMode maps truthy to inject, falsy to toast, else off", () => {
@@ -154,7 +191,7 @@ test("injects a visible report into the parent when a child updates todos", asyn
       ses_child: { id: "ses_child", parentID: "ses_parent", agent: "frontend", slug: "hidden-panda" },
     },
   })
-  const progress = createSubagentProgress({ client, now: () => 1000, intervalMs: 120000 })
+  const progress = createSubagentProgress({ client, now: () => 1000, intervalMs: 120000, channel: "inline" })
   await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_child", parentID: "ses_parent", agent: "frontend", slug: "hidden-panda" } } } })
   await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_parent", agent: "orchestrator" } } } })
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
@@ -168,7 +205,7 @@ test("injects a visible report into the parent when a child updates todos", asyn
 
 test("resolves the child slug lazily via session.get when no event was seen", async () => {
   const { client, calls } = fakeClient({ sessions: { ses_child: { id: "ses_child", parentID: "ses_parent", agent: "backend", slug: "mighty-island" } } })
-  const progress = createSubagentProgress({ client, now: () => 1000 })
+  const progress = createSubagentProgress({ client, now: () => 1000, channel: "inline" })
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
   expect(calls.promptAsync.length).toBe(1)
   expect(calls.promptAsync[0].body.parts[0].text).toContain("backend · mighty-island · reporting to ses_parent")
@@ -192,9 +229,45 @@ test("toast mode shows a toast instead of injecting a prompt", async () => {
   expect(body.variant).toBe("info")
 })
 
+test("chat channel sends a hidden no-reply part instead of injecting", async () => {
+  const { client, calls } = fakeClient({
+    sessions: { ses_parent: { id: "ses_parent" }, ses_child: { id: "ses_child", parentID: "ses_parent", agent: "frontend" } },
+  })
+  const progress = createSubagentProgress({ client, now: () => 1000, channel: "chat" })
+  await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
+  expect(calls.promptAsync.length).toBe(0)
+  expect(calls.showToast.length).toBe(0)
+  expect(calls.prompt.length).toBe(1)
+  expect(calls.prompt[0].path.id).toBe("ses_parent")
+  expect(calls.prompt[0].body.noReply).toBe(true)
+  expect(calls.prompt[0].body.parts[0].ignored).toBe(true)
+})
+
+test("both channel fires toast AND inline independently", async () => {
+  const { client, calls } = fakeClient({
+    sessions: { ses_parent: { id: "ses_parent" }, ses_child: { id: "ses_child", parentID: "ses_parent", agent: "frontend" } },
+  })
+  const progress = createSubagentProgress({ client, now: () => 1000, channel: "both" })
+  await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
+  expect(calls.showToast.length).toBe(1)
+  expect(calls.promptAsync.length).toBe(1)
+  expect(calls.prompt.length).toBe(1)
+})
+
+test("off channel delivers nothing", async () => {
+  const { client, calls } = fakeClient({
+    sessions: { ses_parent: { id: "ses_parent" }, ses_child: { id: "ses_child", parentID: "ses_parent" } },
+  })
+  const progress = createSubagentProgress({ client, now: () => 1000, channel: "off" })
+  await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
+  expect(calls.showToast.length).toBe(0)
+  expect(calls.promptAsync.length).toBe(0)
+  expect(calls.prompt.length).toBe(0)
+})
+
 test("does not inject for a root session (no parent)", async () => {
   const { client, calls } = fakeClient({ sessions: {} })
-  const progress = createSubagentProgress({ client, now: () => 1000 })
+  const progress = createSubagentProgress({ client, now: () => 1000, channel: "inline" })
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_root", todos: TODOS } } })
   expect(calls.promptAsync.length).toBe(0)
 })
@@ -202,7 +275,7 @@ test("does not inject for a root session (no parent)", async () => {
 test("coalesces repeated updates within the interval and sends the final once", async () => {
   const { client, calls } = fakeClient({ sessions: { ses_parent: {} } })
   let clock = 1000
-  const progress = createSubagentProgress({ client, now: () => clock, intervalMs: 120000 })
+  const progress = createSubagentProgress({ client, now: () => clock, intervalMs: 120000, channel: "inline" })
   await progress.event({ event: { type: "session.created", properties: { info: { id: "ses_child", parentID: "ses_parent" } } } })
 
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
@@ -227,7 +300,7 @@ test("coalesces repeated updates within the interval and sends the final once", 
 
 test("resolves the parent lazily via session.get when no event was seen", async () => {
   const { client, calls } = fakeClient({ sessions: { ses_child: { id: "ses_child", parentID: "ses_parent" } } })
-  const progress = createSubagentProgress({ client, now: () => 1000 })
+  const progress = createSubagentProgress({ client, now: () => 1000, channel: "inline" })
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
   expect(calls.get.length).toBeGreaterThanOrEqual(1)
   expect(calls.get.some((call) => call.path.id === "ses_child")).toBe(true)
@@ -236,13 +309,13 @@ test("resolves the parent lazily via session.get when no event was seen", async 
 
 test("ignores an empty todo list", async () => {
   const { client, calls } = fakeClient({ sessions: { ses_child: { parentID: "ses_parent" } } })
-  const progress = createSubagentProgress({ client, now: () => 1000 })
+  const progress = createSubagentProgress({ client, now: () => 1000, channel: "inline" })
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: [] } } })
   expect(calls.promptAsync.length).toBe(0)
 })
 
 test("does not throw when the SDK is unavailable", async () => {
-  const progress = createSubagentProgress({ client: undefined, now: () => 1000 })
+  const progress = createSubagentProgress({ client: undefined, now: () => 1000, channel: "inline" })
   await progress.event({ event: { type: "todo.updated", properties: { sessionID: "ses_child", todos: TODOS } } })
   expect(true).toBe(true)
 })

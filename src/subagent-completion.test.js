@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test"
-import { createSubagentCompletion, formatCompletionNotice } from "./subagent-completion.js"
+import {
+  completionChannel,
+  createSubagentCompletion,
+  formatCompletionNotice,
+  formatCompletionToast,
+} from "./subagent-completion.js"
 
-/** Fake SDK client capturing promptAsync calls and returning canned session info. */
+/** Fake SDK client capturing promptAsync/prompt/showToast calls and returning canned session info. */
 function fakeClient(overrides = {}) {
-  const calls = { promptAsync: [], get: [] }
+  const calls = { promptAsync: [], prompt: [], get: [], showToast: [] }
   const sessions = overrides.sessions ?? {}
   const client = {
     session: {
@@ -15,10 +20,39 @@ function fakeClient(overrides = {}) {
         calls.promptAsync.push(input)
         return { data: undefined }
       },
+      prompt: async (input) => {
+        calls.prompt.push(input)
+        return { data: undefined }
+      },
+    },
+    tui: {
+      showToast: async (input) => {
+        calls.showToast.push(input)
+        return { data: true }
+      },
     },
   }
   return { client, calls }
 }
+
+test("completionChannel reads the new var, defaulting to the progress channel", () => {
+  const prev = { p: process.env.OPENCODE_SUBAGENT_PROGRESS, c: process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY }
+  delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  delete process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY
+  expect(completionChannel()).toBe("off")
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "1"
+  expect(completionChannel()).toBe("inline")
+  process.env.OPENCODE_SUBAGENT_PROGRESS = "0"
+  expect(completionChannel()).toBe("toast")
+  process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY = "both"
+  expect(completionChannel()).toBe("both")
+  process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY = "off"
+  expect(completionChannel()).toBe("off")
+  if (prev.p === undefined) delete process.env.OPENCODE_SUBAGENT_PROGRESS
+  else process.env.OPENCODE_SUBAGENT_PROGRESS = prev.p
+  if (prev.c === undefined) delete process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY
+  else process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY = prev.c
+})
 
 test("formatCompletionNotice carries the child identity and the follow-up wording", () => {
   const text = formatCompletionNotice({ sessionID: "ses_child", agent: "backend", nickname: "mighty-island", title: "Do work" })
@@ -26,14 +60,21 @@ test("formatCompletionNotice carries the child identity and the follow-up wordin
   expect(text).toContain("subagent_result")
 })
 
-test("injects a NON-synthetic completion notice into the parent on child idle", async () => {
+test("formatCompletionToast puts identity in the title and a short message", () => {
+  const toast = formatCompletionToast({ sessionID: "ses_child", agent: "backend", nickname: "mighty-island", title: "Do work" })
+  expect(toast.title).toBe("⤷ backend · mighty-island · Do work")
+  expect(toast.message).toBe("follow-up completed")
+  expect(toast.variant).toBe("info")
+})
+
+test("inline channel injects a NON-synthetic completion notice into the parent on child idle", async () => {
   const { client, calls } = fakeClient({
     sessions: {
       ses_parent: { id: "ses_parent", agent: "orchestrator", model: { id: "m", providerID: "p" } },
       ses_child: { id: "ses_child", parentID: "ses_parent", agent: "backend", slug: "mighty-island" },
     },
   })
-  const completion = createSubagentCompletion({ client, enabled: true })
+  const completion = createSubagentCompletion({ client, channel: "inline" })
   completion.onSend("ses_parent", "ses_child")
   await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
 
@@ -47,9 +88,48 @@ test("injects a NON-synthetic completion notice into the parent on child idle", 
   expect(call.body.parts[0].text).toContain("⤷ backend · mighty-island · follow-up completed")
 })
 
+test("chat channel sends a hidden no-reply part (no model turn)", async () => {
+  const { client, calls } = fakeClient({
+    sessions: { ses_parent: { id: "ses_parent" }, ses_child: { id: "ses_child", parentID: "ses_parent", agent: "backend" } },
+  })
+  const completion = createSubagentCompletion({ client, channel: "chat" })
+  completion.onSend("ses_parent", "ses_child")
+  await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
+  expect(calls.promptAsync.length).toBe(0)
+  expect(calls.showToast.length).toBe(0)
+  expect(calls.prompt.length).toBe(1)
+  expect(calls.prompt[0].path.id).toBe("ses_parent")
+  expect(calls.prompt[0].body.noReply).toBe(true)
+  expect(calls.prompt[0].body.parts[0].ignored).toBe(true)
+})
+
+test("toast channel shows a toast and injects nothing", async () => {
+  const { client, calls } = fakeClient({
+    sessions: { ses_parent: { id: "ses_parent" }, ses_child: { id: "ses_child", parentID: "ses_parent", agent: "backend" } },
+  })
+  const completion = createSubagentCompletion({ client, channel: "toast" })
+  completion.onSend("ses_parent", "ses_child")
+  await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
+  expect(calls.promptAsync.length).toBe(0)
+  expect(calls.prompt.length).toBe(0)
+  expect(calls.showToast.length).toBe(1)
+  expect(calls.showToast[0].body.variant).toBe("info")
+})
+
+test("both channel fires toast AND inline independently", async () => {
+  const { client, calls } = fakeClient({
+    sessions: { ses_parent: { id: "ses_parent" }, ses_child: { id: "ses_child", parentID: "ses_parent", agent: "backend" } },
+  })
+  const completion = createSubagentCompletion({ client, channel: "both" })
+  completion.onSend("ses_parent", "ses_child")
+  await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
+  expect(calls.showToast.length).toBe(1)
+  expect(calls.promptAsync.length).toBe(1)
+})
+
 test("fires on session.status{type:'idle'} as well as session.idle", async () => {
   const { client, calls } = fakeClient({ sessions: { ses_child: { id: "ses_child", parentID: "ses_parent" } } })
-  const completion = createSubagentCompletion({ client, enabled: true })
+  const completion = createSubagentCompletion({ client, channel: "inline" })
   completion.onSend("ses_parent", "ses_child")
   await completion.event({ event: { type: "session.status", properties: { sessionID: "ses_child", status: { type: "idle" } } } })
   expect(calls.promptAsync.length).toBe(1)
@@ -57,7 +137,7 @@ test("fires on session.status{type:'idle'} as well as session.idle", async () =>
 
 test("the registration is one-shot: a later idle does not re-fire", async () => {
   const { client, calls } = fakeClient({ sessions: { ses_child: { id: "ses_child", parentID: "ses_parent" } } })
-  const completion = createSubagentCompletion({ client, enabled: true })
+  const completion = createSubagentCompletion({ client, channel: "inline" })
   completion.onSend("ses_parent", "ses_child")
   await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
   await completion.event({ event: { type: "session.status", properties: { sessionID: "ses_child", status: { type: "idle" } } } })
@@ -66,7 +146,7 @@ test("the registration is one-shot: a later idle does not re-fire", async () => 
 
 test("injects nothing when the feature is disabled", async () => {
   const { client, calls } = fakeClient({ sessions: { ses_child: { id: "ses_child", parentID: "ses_parent" } } })
-  const completion = createSubagentCompletion({ client, enabled: false })
+  const completion = createSubagentCompletion({ client, channel: "inline", enabled: false })
   completion.onSend("ses_parent", "ses_child")
   await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
   expect(calls.promptAsync.length).toBe(0)
@@ -74,7 +154,7 @@ test("injects nothing when the feature is disabled", async () => {
 
 test("injects nothing for an unregistered child (initial dispatch is untouched)", async () => {
   const { client, calls } = fakeClient({ sessions: { ses_child: { id: "ses_child", parentID: "ses_parent" } } })
-  const completion = createSubagentCompletion({ client, enabled: true })
+  const completion = createSubagentCompletion({ client, channel: "inline" })
   await completion.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
   expect(calls.promptAsync.length).toBe(0)
 })
