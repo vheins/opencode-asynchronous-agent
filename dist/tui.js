@@ -1506,7 +1506,7 @@ function ResponsiveDock(props) {
   const width = () => Math.max(1, (size().width || 80) - 2);
   const segments = () => {
     const list = [{
-      text: `Asynchronous Agent \xB7 v${"0.11.0"}`,
+      text: `Asynchronous Agent \xB7 v${"0.12.0"}`,
       tone: "primary",
       priority: 0
     }, {
@@ -1653,7 +1653,7 @@ function StatusBar(props) {
     _$setProp(_el$102, "flexShrink", 0);
     _$insertNode(_el$103, _el$104);
     _$insertNode(_el$104, _el$105);
-    _$insert(_el$104, "0.11.0", null);
+    _$insert(_el$104, "0.12.0", null);
     _$insert(_el$102, _$createComponent(Show, {
       get when() {
         return size().width >= 65;
