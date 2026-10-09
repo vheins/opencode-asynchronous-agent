@@ -1445,7 +1445,7 @@ function ResponsiveDock(props) {
   const width = () => Math.max(1, (size().width || 80) - 2);
   const segments = () => {
     const list = [{
-      text: "ASYNC",
+      text: `ASYNC \xB7 v${"0.11.0"}`,
       tone: "primary",
       priority: 0
     }, {
@@ -1580,7 +1580,7 @@ function StatusBar(props) {
   const theme = () => props.api.theme.current;
   const now = createClock();
   return (() => {
-    var _el$105 = _$createElement("box"), _el$106 = _$createElement("text"), _el$107 = _$createElement("b"), _el$111 = _$createElement("text");
+    var _el$105 = _$createElement("box"), _el$106 = _$createElement("text"), _el$107 = _$createElement("b"), _el$108 = _$createTextNode(`ASYNC \xB7 v`), _el$111 = _$createElement("text");
     _$insertNode(_el$105, _el$106);
     _$insertNode(_el$105, _el$111);
     _$setProp(_el$105, "flexDirection", "row");
@@ -1591,7 +1591,8 @@ function StatusBar(props) {
     _$setProp(_el$105, "height", 1);
     _$setProp(_el$105, "flexShrink", 0);
     _$insertNode(_el$106, _el$107);
-    _$insertNode(_el$107, _$createTextNode(`ASYNC`));
+    _$insertNode(_el$107, _el$108);
+    _$insert(_el$107, "0.11.0", null);
     _$insert(_el$105, _$createComponent(Show, {
       get when() {
         return size().width >= 65;
@@ -1690,20 +1691,11 @@ var plugin = {
             }
           });
         },
-        home_footer() {
-          return (() => {
-            var _el$119 = _$createElement("text"), _el$120 = _$createTextNode(`OPENCODE ASYNC AGENT \xB7 v`);
-            _$insertNode(_el$119, _el$120);
-            _$insert(_el$119, () => api.app.version, null);
-            _$effect((_$p) => _$setProp(_el$119, "fg", api.theme.current.textMuted, _$p));
-            return _el$119;
-          })();
-        },
         app_bottom() {
           return (() => {
-            var _el$121 = _$createElement("box");
-            _$setProp(_el$121, "flexShrink", 0);
-            _$insert(_el$121, _$createComponent(Show, {
+            var _el$119 = _$createElement("box");
+            _$setProp(_el$119, "flexShrink", 0);
+            _$insert(_el$119, _$createComponent(Show, {
               get when() {
                 return _$memo(() => !!sessionID())() && !sidebarVisible();
               },
@@ -1724,7 +1716,7 @@ var plugin = {
                 });
               }
             }));
-            return _el$121;
+            return _el$119;
           })();
         }
       }

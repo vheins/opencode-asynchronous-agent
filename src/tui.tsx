@@ -6,6 +6,9 @@ import { activityDetail, mainTodoProgress, renderBar, sessionMetrics, sidebarAct
 import { elapsedLabel, fetchSubagent } from "./subagent"
 import { inspectWorkspace } from "./workspace"
 
+/** Plugin's own version, injected at build time by `build.ts` (`define`). */
+declare const __PLUGIN_VERSION__: string
+
 /**
  * Keeps recently-removed items visible for a short grace period.
  * Re-seeds when the session scope changes so stale rows never leak across sessions.
@@ -726,7 +729,7 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
   const width = () => Math.max(1, (size().width || 80) - 2)
   const segments = (): StatusSegment[] => {
     const list: StatusSegment[] = [
-      { text: "ASYNC", tone: "primary", priority: 0 },
+      { text: `ASYNC · v${__PLUGIN_VERSION__}`, tone: "primary", priority: 0 },
       { text: ` | ● ${identity().running} run · ✓ ${identity().done} done · ✕ ${identity().error} err · Σ ${identity().total}`, tone: "muted", priority: 0 },
       { text: ` | ${mcpPluginLabel(props.api)}`, tone: "muted", priority: 1 },
     ]
@@ -772,7 +775,7 @@ function StatusBar(props: { api: TuiPluginApi }) {
   const now = createClock()
   return (
     <box flexDirection="row" justifyContent="space-between" backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} width="100%" height={1} flexShrink={0}>
-      <text fg={theme().primary}><b>ASYNC</b></text>
+      <text fg={theme().primary}><b>ASYNC · v{__PLUGIN_VERSION__}</b></text>
       <Show when={size().width >= 65}>
         <text fg={theme().textMuted}>{mcpPluginLabel(props.api)}</text>
       </Show>
@@ -805,9 +808,6 @@ const plugin: TuiPluginModule = {
         },
         sidebar_content(_ctx, props) {
           return <SidebarPresence visible={setSidebarVisible}><Overview api={api} id={props.session_id} /></SidebarPresence>
-        },
-        home_footer() {
-          return <text fg={api.theme.current.textMuted}>OPENCODE ASYNC AGENT · v{api.app.version}</text>
         },
         app_bottom() {
           // Exactly one physical line: the dock (session + collapsed sidebar)
