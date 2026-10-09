@@ -1,8 +1,42 @@
 # @vheins/opencode-asynchronous-agent
 
+[![npm version](https://img.shields.io/npm/v/@vheins/opencode-asynchronous-agent.svg)](https://www.npmjs.com/package/@vheins/opencode-asynchronous-agent)
+[![npm downloads](https://img.shields.io/npm/dm/@vheins/opencode-asynchronous-agent.svg)](https://www.npmjs.com/package/@vheins/opencode-asynchronous-agent)
+[![license: MIT](https://img.shields.io/npm/l/@vheins/opencode-asynchronous-agent.svg)](./LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/vheins/opencode-asynchronous-agent.svg)](https://github.com/vheins/opencode-asynchronous-agent/stargazers)
+[![OpenCode](https://img.shields.io/badge/opencode-%3E%3D1.18.0-6e56cf.svg)](https://opencode.ai)
+
 An [OpenCode](https://opencode.ai) plugin that makes every subagent call run
 **asynchronously in the background** — automatically — **plus a TUI sidebar
 monitor** for those background subagents.
+
+Run every OpenCode subagent asynchronously in the background, with a live TUI
+sidebar that tracks each child's activity, todo progress, elapsed time, and
+token usage. The plugin forces `background = true` on every subagent call so the
+parent never blocks, and it ships opt-in control tools, event-driven progress
+reports, and an opt-out database cleanup layer. Everything is configured through
+optional environment variables, so the defaults just work.
+
+## Table of contents
+
+- [How it works](#how-it-works)
+- [Install](#install)
+  - [From npm (recommended)](#from-npm-recommended)
+  - [From a local checkout](#from-a-local-checkout)
+  - [Register it](#register-it)
+  - [Restart the service](#restart-the-service)
+- [Configuration](#configuration)
+  - [Examples](#examples)
+- [Subagent status tool (opt-in)](#subagent-status-tool-opt-in)
+- [Subagent control tools (opt-in, V1 only)](#subagent-control-tools-opt-in-v1-only)
+  - [Parent-agent filter on V1](#parent-agent-filter-on-v1)
+- [Subagent progress reports (V1 only, on by default)](#subagent-progress-reports-v1-only-on-by-default)
+  - [Completion notices (V1 only, on by default)](#completion-notices-v1-only-on-by-default)
+- [Database cleanup (V1, opt-out)](#database-cleanup-v1-opt-out)
+- [Behaviour notes](#behaviour-notes)
+- [Files](#files)
+- [Requirements](#requirements)
+- [License](#license)
 
 Works on **both** OpenCode V1 (`>=1.18.0`) and V2 (`>=2.0.0`):
 
@@ -130,7 +164,7 @@ git clone https://github.com/vheins/opencode-asynchronous-agent.git \
   ~/.config/opencode/plugins/opencode-asynchronous-agent
 ```
 
-### 2. Register it
+### Register it
 
 Add the plugin directory to the top-level `plugins` array in your OpenCode config
 (`~/.config/opencode/opencode.json` for a global install):
@@ -146,7 +180,7 @@ Add the plugin directory to the top-level `plugins` array in your OpenCode confi
 
 Use an absolute path if your OpenCode build does not expand `~`.
 
-### 3. Restart the service
+### Restart the service
 
 Plugin and config changes are picked up on restart:
 
@@ -509,6 +543,7 @@ and is **V1 only** — the V2 plugin API exposes no event or database access.
 | `src/subagent.ts` | Subagent detail fetch (`fetchSubagent`), summary (`subagentDetails`), duration (`elapsedLabel`). |
 | `src/workspace.ts` | Bounded Git workspace scan for the "Workspace & files" card. |
 | `dist/tui.js` | `./tui` entrypoint — the built TUI sidebar bundle (`bun run build`). |
+| `README-monitor.md` | Attribution note and original documentation for the vendored `opencode-subagent-statusline` monitor. |
 | `package.json` | Package metadata and entrypoint exports. |
 
 OpenCode V2 resolves a plugin directory through its `server` entrypoint (root

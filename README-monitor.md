@@ -1,5 +1,8 @@
 # opencode-subagent-statusline
 
+> **Vendored monitor documentation.** For the current `./tui` behavior shipped by
+> `@vheins/opencode-asynchronous-agent`, see the [main README](./README.md).
+
 > **Attribution note.** This document describes the original vendored
 > `opencode-subagent-statusline` monitor, kept for attribution under
 > [`LICENSE-monitor`](./LICENSE-monitor). In
@@ -133,10 +136,11 @@ immediately.
 
 ## Documentation
 
-For a deeper explanation of how the plugin works, see the structured docs:
+For a deeper explanation of how the plugin works, see the structured docs
+(hosted in the original upstream project):
 
-- [English documentation](docs/en/00-index.md)
-- [Documentación en español](docs/es/00-indice.md)
+- [English documentation](https://github.com/Joaquinvesapa/sub-agent-statusline/blob/main/docs/en/00-index.md)
+- [Documentación en español](https://github.com/Joaquinvesapa/sub-agent-statusline/blob/main/docs/es/00-indice.md)
 
 They cover installation, architecture, event flow, state/counters, rendering,
 TUI behavior, advanced configuration, development/testing, and troubleshooting.
@@ -217,7 +221,7 @@ pnpm typecheck
 ```
 
 For the testing strategy, file map, examples, and current TUI/e2e boundaries, see
-[`docs/testing.md`](docs/testing.md).
+the upstream [testing documentation](https://github.com/Joaquinvesapa/sub-agent-statusline/blob/main/docs/testing.md).
 
 ---
 

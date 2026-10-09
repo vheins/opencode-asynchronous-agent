@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/vheins/opencode-asynchronous-agent/security/advisories/new
+    about: Report security issues privately through GitHub, not as a public issue.
+  - name: Contributing guide
+    url: https://github.com/vheins/opencode-asynchronous-agent/blob/main/CONTRIBUTING.md
+    about: Read how to set up, build, and test the project before contributing.
