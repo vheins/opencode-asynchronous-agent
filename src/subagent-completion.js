@@ -10,8 +10,10 @@
  * This module emulates that missing notice without a core change. When
  * `subagent_send` queues a prompt it records `childID -> parentID`; on the
  * child's next `session.idle` (or `session.status{type:"idle"}`) it injects a
- * synthetic completion text into the parent via `session.promptAsync` — the same
- * channel OpenCode uses for its native notice.
+ * completion text into the parent via `session.promptAsync` — the same channel
+ * OpenCode uses for its native notice. The part is sent NON-synthetic (matching
+ * `subagent-progress.js`), so it stays visible in the parent's TUI transcript: a
+ * synthetic part is hidden, which would defeat the notice's purpose.
  *
  * The registration is one-shot: it is cleared the moment the notice fires, so a
  * reused child session is announced exactly once per follow-up (not on every
@@ -101,8 +103,8 @@ export function createSubagentCompletion(options = {}) {
   }
 
   /**
-   * Inject the synthetic completion notice into the parent session. The parent's
-   * own agent/model is preserved so the notice does not rewrite its identity.
+   * Inject the completion notice into the parent session. The parent's own
+   * agent/model is preserved so the notice does not rewrite its identity.
    */
   async function notify(parentID, childID) {
     const api = client?.session
@@ -119,7 +121,9 @@ export function createSubagentCompletion(options = {}) {
     const text = formatCompletionNotice({ sessionID: childID, ...child })
     await api.promptAsync({
       path: { id: parentID },
-      body: { parts: [{ type: "text", text, synthetic: true }], ...target },
+      // NON-synthetic (mirrors subagent-progress.js): a synthetic part is hidden
+      // from the parent's TUI, so the notice would never reach the user.
+      body: { parts: [{ type: "text", text }], ...target },
     })
     return true
   }
