@@ -2,6 +2,7 @@ import type { TuiPluginApi, TuiPluginModule, TuiThemeCurrent } from "@opencode-a
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type Accessor, type JSX } from "solid-js"
+import { humanBytes, readDbSizeBytes } from "./dbsize"
 import { activityDetail, mainTodoProgress, progressLabel, progressLevel, renderBar, sessionMetrics, sidebarActivity, subagentTodoProgress } from "./model"
 import { elapsedLabel, fetchSubagent } from "./subagent"
 import { inspectWorkspace } from "./workspace"
@@ -320,6 +321,30 @@ function useBarAnimation(active: Accessor<boolean>) {
     onCleanup(() => {
       barSubscribers = Math.max(0, barSubscribers - 1)
       if (barSubscribers === 0 && barTimer) { clearInterval(barTimer); barTimer = undefined }
+    })
+  })
+}
+
+const [dbSize, setDbSize] = createSignal<string | undefined>(undefined)
+let dbSizeTimer: ReturnType<typeof setInterval> | undefined
+let dbSizeSubscribers = 0
+
+/**
+ * Reference-counted slow poll for the in-use database size. The single 10s
+ * interval starts when the first consumer mounts and stops when the last
+ * unmounts, so exactly one stat runs per tick and none while the line is hidden.
+ */
+function useDbSizePoll() {
+  createEffect(() => {
+    dbSizeSubscribers++
+    if (!dbSizeTimer) {
+      const refresh = () => setDbSize(humanBytes(readDbSizeBytes()))
+      refresh()
+      dbSizeTimer = setInterval(refresh, 10_000)
+    }
+    onCleanup(() => {
+      dbSizeSubscribers = Math.max(0, dbSizeSubscribers - 1)
+      if (dbSizeSubscribers === 0 && dbSizeTimer) { clearInterval(dbSizeTimer); dbSizeTimer = undefined }
     })
   })
 }
@@ -762,6 +787,7 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
   const identity = createMemo(() => asyncIdentity(props.api, props.id))
   const theme = () => props.api.theme.current
   const now = createClock()
+  useDbSizePoll()
   // Single physical line: the dock absorbs the old StatusBar content (MCP/plugin)
   // so app_bottom renders exactly one line at any width.
   const width = () => Math.max(1, (size().width || 80) - 2)
@@ -770,6 +796,7 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
       { text: `Asynchronous Agent · v${__PLUGIN_VERSION__}`, tone: "primary", priority: 0 },
       { text: ` | ● ${identity().running} run · ✓ ${identity().done} done · ✕ ${identity().error} err · Σ ${identity().total}`, tone: "muted", priority: 0 },
       { text: ` | ${mcpPluginLabel(props.api)}`, tone: "muted", priority: 1 },
+      { text: ` | DB ${dbSize() ?? "—"}`, tone: "muted", priority: 2 },
     ]
     if (activity().latest) {
       const detail = activityDetail(activity().latest!)
@@ -811,11 +838,15 @@ function StatusBar(props: { api: TuiPluginApi }) {
   const size = useTerminalDimensions()
   const theme = () => props.api.theme.current
   const now = createClock()
+  useDbSizePoll()
   return (
     <box flexDirection="row" justifyContent="space-between" backgroundColor={theme().backgroundPanel} paddingLeft={1} paddingRight={1} width="100%" height={1} flexShrink={0}>
       <text fg={theme().primary}><b>Asynchronous Agent · v{__PLUGIN_VERSION__}</b></text>
       <Show when={size().width >= 65}>
         <text fg={theme().textMuted}>{mcpPluginLabel(props.api)}</text>
+      </Show>
+      <Show when={size().width >= 80}>
+        <text fg={theme().textMuted}>DB {dbSize() ?? "—"}</text>
       </Show>
       <Show when={size().width >= 95}>
         <text fg={theme().textMuted}>{clockLabel(now())}</text>

@@ -11,6 +11,88 @@ import { createElement as _$createElement } from "@opentui/solid";
 import { useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js";
 
+// src/dbsize.ts
+import { statSync as statSync2 } from "fs";
+
+// src/dbpath.js
+import { readdirSync, statSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
+function resolveDbPath(options = {}) {
+  const env = options.env ?? process.env;
+  const dataDir = options.dataDir ?? defaultDataDir(env);
+  const readdir = options.readdir ?? ((dir) => readdirSync(dir));
+  const mtime = options.mtime ?? ((p) => statSync(p).mtimeMs);
+  const explicit = String(env.OPENCODE_DB ?? "").trim();
+  if (explicit === ":memory:")
+    return explicit;
+  if (explicit) {
+    return explicit.startsWith("/") ? explicit : join(dataDir, explicit);
+  }
+  let entries;
+  try {
+    entries = readdir(dataDir);
+  } catch {
+    return;
+  }
+  const candidates = entries.filter((name) => name.startsWith("opencode") && name.endsWith(".db") && !name.endsWith("-wal") && !name.endsWith("-shm"));
+  if (candidates.length === 0)
+    return;
+  const preferred = candidates.find((name) => name === "opencode.db");
+  if (preferred)
+    return join(dataDir, preferred);
+  let best;
+  let bestMtime = -1;
+  for (const name of candidates) {
+    const full = join(dataDir, name);
+    const stamp = mtime(full);
+    if (stamp > bestMtime) {
+      bestMtime = stamp;
+      best = full;
+    }
+  }
+  return best;
+}
+function defaultDataDir(env = process.env) {
+  const xdg = String(env.XDG_DATA_HOME ?? "").trim();
+  const base = xdg || join(homedir(), ".local", "share");
+  return join(base, "opencode");
+}
+
+// src/dbsize.ts
+var SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+function humanBytes(bytes) {
+  if (bytes === undefined || !Number.isFinite(bytes) || bytes < 0)
+    return "\u2014";
+  let value = bytes;
+  let unit = 0;
+  while (unit < SIZE_UNITS.length - 1 && value >= 1024) {
+    value /= 1024;
+    unit++;
+  }
+  if (unit === 0)
+    return `${Math.round(value)} B`;
+  if (unit < SIZE_UNITS.length - 1 && value.toFixed(1) === "1024.0") {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(1)} ${SIZE_UNITS[unit]}`;
+}
+var cachedDbPath = null;
+function readDbSizeBytes() {
+  if (cachedDbPath === null)
+    cachedDbPath = resolveDbPath();
+  const path = cachedDbPath;
+  if (!path || path === ":memory:")
+    return;
+  try {
+    return statSync2(path).size;
+  } catch {
+    cachedDbPath = null;
+    return;
+  }
+}
+
 // src/model.ts
 function activityDetail(tool) {
   const input = tool.state.input;
@@ -229,7 +311,7 @@ function elapsedLabel(start, now) {
 
 // src/workspace.ts
 import { readdir } from "fs/promises";
-import { join, relative } from "path";
+import { join as join2, relative } from "path";
 var ignored = new Set(["node_modules", ".git", ".next", ".cache", "vendor", "dist", "build", ".venv", "Pods"]);
 async function inspectWorkspace(root, signal) {
   const repos = [];
@@ -277,7 +359,7 @@ async function inspectWorkspace(root, signal) {
     for (const entry of entries) {
       if (entry.isDirectory() && !entry.isSymbolicLink() && !ignored.has(entry.name) && !entry.name.startsWith(".")) {
         if (current.depth < 4)
-          queue.push({ path: join(current.path, entry.name), depth: current.depth + 1 });
+          queue.push({ path: join2(current.path, entry.name), depth: current.depth + 1 });
         else
           depthLimited = true;
       }
@@ -477,6 +559,26 @@ function useBarAnimation(active) {
       if (barSubscribers === 0 && barTimer) {
         clearInterval(barTimer);
         barTimer = undefined;
+      }
+    });
+  });
+}
+var [dbSize, setDbSize] = createSignal(undefined);
+var dbSizeTimer;
+var dbSizeSubscribers = 0;
+function useDbSizePoll() {
+  createEffect(() => {
+    dbSizeSubscribers++;
+    if (!dbSizeTimer) {
+      const refresh = () => setDbSize(humanBytes(readDbSizeBytes()));
+      refresh();
+      dbSizeTimer = setInterval(refresh, 1e4);
+    }
+    onCleanup(() => {
+      dbSizeSubscribers = Math.max(0, dbSizeSubscribers - 1);
+      if (dbSizeSubscribers === 0 && dbSizeTimer) {
+        clearInterval(dbSizeTimer);
+        dbSizeTimer = undefined;
       }
     });
   });
@@ -1503,6 +1605,7 @@ function ResponsiveDock(props) {
   const identity = createMemo(() => asyncIdentity(props.api, props.id));
   const theme = () => props.api.theme.current;
   const now = createClock();
+  useDbSizePoll();
   const width = () => Math.max(1, (size().width || 80) - 2);
   const segments = () => {
     const list = [{
@@ -1517,6 +1620,10 @@ function ResponsiveDock(props) {
       text: ` | ${mcpPluginLabel(props.api)}`,
       tone: "muted",
       priority: 1
+    }, {
+      text: ` | DB ${dbSize() ?? "\u2014"}`,
+      tone: "muted",
+      priority: 2
     }];
     if (activity().latest) {
       const detail = activityDetail(activity().latest);
@@ -1640,10 +1747,11 @@ function StatusBar(props) {
   const size = useTerminalDimensions();
   const theme = () => props.api.theme.current;
   const now = createClock();
+  useDbSizePoll();
   return (() => {
-    var _el$102 = _$createElement("box"), _el$103 = _$createElement("text"), _el$104 = _$createElement("b"), _el$105 = _$createTextNode(`Asynchronous Agent \xB7 v`), _el$108 = _$createElement("text");
+    var _el$102 = _$createElement("box"), _el$103 = _$createElement("text"), _el$104 = _$createElement("b"), _el$105 = _$createTextNode(`Asynchronous Agent \xB7 v`), _el$110 = _$createElement("text");
     _$insertNode(_el$102, _el$103);
-    _$insertNode(_el$102, _el$108);
+    _$insertNode(_el$102, _el$110);
     _$setProp(_el$102, "flexDirection", "row");
     _$setProp(_el$102, "justifyContent", "space-between");
     _$setProp(_el$102, "paddingLeft", 1);
@@ -1664,24 +1772,36 @@ function StatusBar(props) {
         _$effect((_$p) => _$setProp(_el$106, "fg", theme().textMuted, _$p));
         return _el$106;
       }
-    }), _el$108);
+    }), _el$110);
+    _$insert(_el$102, _$createComponent(Show, {
+      get when() {
+        return size().width >= 80;
+      },
+      get children() {
+        var _el$107 = _$createElement("text"), _el$108 = _$createTextNode(`DB `);
+        _$insertNode(_el$107, _el$108);
+        _$insert(_el$107, () => dbSize() ?? "\u2014", null);
+        _$effect((_$p) => _$setProp(_el$107, "fg", theme().textMuted, _$p));
+        return _el$107;
+      }
+    }), _el$110);
     _$insert(_el$102, _$createComponent(Show, {
       get when() {
         return size().width >= 95;
       },
       get children() {
-        var _el$107 = _$createElement("text");
-        _$insert(_el$107, () => clockLabel(now()));
-        _$effect((_$p) => _$setProp(_el$107, "fg", theme().textMuted, _$p));
-        return _el$107;
+        var _el$109 = _$createElement("text");
+        _$insert(_el$109, () => clockLabel(now()));
+        _$effect((_$p) => _$setProp(_el$109, "fg", theme().textMuted, _$p));
+        return _el$109;
       }
-    }), _el$108);
-    _$insert(_el$108, () => props.api.state.vcs?.branch ?? "local");
+    }), _el$110);
+    _$insert(_el$110, () => props.api.state.vcs?.branch ?? "local");
     _$effect((_p$) => {
       var _v$26 = theme().backgroundPanel, _v$27 = theme().primary, _v$28 = theme().textMuted;
       _v$26 !== _p$.e && (_p$.e = _$setProp(_el$102, "backgroundColor", _v$26, _p$.e));
       _v$27 !== _p$.t && (_p$.t = _$setProp(_el$103, "fg", _v$27, _p$.t));
-      _v$28 !== _p$.a && (_p$.a = _$setProp(_el$108, "fg", _v$28, _p$.a));
+      _v$28 !== _p$.a && (_p$.a = _$setProp(_el$110, "fg", _v$28, _p$.a));
       return _p$;
     }, {
       e: undefined,
@@ -1705,27 +1825,27 @@ var plugin = {
       slots: {
         sidebar_title(_ctx, props) {
           return (() => {
-            var _el$109 = _$createElement("box"), _el$110 = _$createElement("text"), _el$111 = _$createElement("b");
-            _$insertNode(_el$109, _el$110);
-            _$setProp(_el$109, "gap", 1);
-            _$setProp(_el$109, "paddingBottom", 1);
-            _$insertNode(_el$110, _el$111);
-            _$setProp(_el$110, "wrapMode", "word");
-            _$insert(_el$111, () => props.title);
-            _$insert(_el$109, _$createComponent(Show, {
+            var _el$111 = _$createElement("box"), _el$112 = _$createElement("text"), _el$113 = _$createElement("b");
+            _$insertNode(_el$111, _el$112);
+            _$setProp(_el$111, "gap", 1);
+            _$setProp(_el$111, "paddingBottom", 1);
+            _$insertNode(_el$112, _el$113);
+            _$setProp(_el$112, "wrapMode", "word");
+            _$insert(_el$113, () => props.title);
+            _$insert(_el$111, _$createComponent(Show, {
               get when() {
                 return props.share_url;
               },
               get children() {
-                var _el$112 = _$createElement("text");
-                _$setProp(_el$112, "wrapMode", "char");
-                _$insert(_el$112, () => props.share_url);
-                _$effect((_$p) => _$setProp(_el$112, "fg", api.theme.current.textMuted, _$p));
-                return _el$112;
+                var _el$114 = _$createElement("text");
+                _$setProp(_el$114, "wrapMode", "char");
+                _$insert(_el$114, () => props.share_url);
+                _$effect((_$p) => _$setProp(_el$114, "fg", api.theme.current.textMuted, _$p));
+                return _el$114;
               }
             }), null);
-            _$effect((_$p) => _$setProp(_el$110, "fg", api.theme.current.text, _$p));
-            return _el$109;
+            _$effect((_$p) => _$setProp(_el$112, "fg", api.theme.current.text, _$p));
+            return _el$111;
           })();
         },
         sidebar_content(_ctx, props) {
@@ -1743,9 +1863,9 @@ var plugin = {
         },
         app_bottom() {
           return (() => {
-            var _el$113 = _$createElement("box");
-            _$setProp(_el$113, "flexShrink", 0);
-            _$insert(_el$113, _$createComponent(Show, {
+            var _el$115 = _$createElement("box");
+            _$setProp(_el$115, "flexShrink", 0);
+            _$insert(_el$115, _$createComponent(Show, {
               get when() {
                 return _$memo(() => !!sessionID())() && !sidebarVisible();
               },
@@ -1766,7 +1886,7 @@ var plugin = {
                 });
               }
             }));
-            return _el$113;
+            return _el$115;
           })();
         }
       }

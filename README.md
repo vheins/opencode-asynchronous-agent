@@ -80,7 +80,10 @@ stops whenever no bar has work left. The bar width scales with the terminal
 between a sane minimum and maximum.
 The `app_bottom` line mirrors the aggregate when the sidebar is collapsed. Status
 segments are color-coded from the active theme: run (`accent`), done (`success`),
-err (`error`), total (`textMuted`).
+err (`error`), total (`textMuted`). The line also shows the size of the in-use
+`opencode.db` in human-readable units (KB/MB/GB/TB), resolved with the same path
+logic as the cleanup module and refreshed on a slow poll so it never adds
+per-frame disk IO; a placeholder is shown when the database is unavailable.
 
 OpenCode V2 ships a keybind (`ctrl+b`, command `session.background`) that moves a
 *running* foreground subagent into background observation. This plugin gives you the

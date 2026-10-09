@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TUI status line shows the size of the in-use `opencode.db` in human-readable
+  units (KB/MB/GB/TB), read on a slow poll and resolved with the same path logic
+  as the cleanup module (FEAT-040).
 - DB IO governor: a WAL governor that issues a non-blocking
   `wal_checkpoint(PASSIVE)` once the `-wal` sidecar exceeds
   `OPENCODE_DB_CLEANUP_WAL_THRESHOLD`, and a `wal_checkpoint(TRUNCATE)` only after
