@@ -50,16 +50,17 @@
  * @module subagent-progress
  */
 
-import { resolveTarget } from "./subagent-control.js"
+import { progressChannel, resolveTarget } from "./subagent-utils.js"
+
+// Re-export the dependency-free env gates/channel resolver so this module's
+// public surface is unchanged (tests import them from here).
+export { DEFAULT_PROGRESS_CHANNEL, progressChannel, progressEnabled, progressMode } from "./subagent-utils.js"
 
 /** Default minimum delay (ms) between two progress reports for the same child. */
 export const DEFAULT_PROGRESS_MS = 300000
 
 /** Default max non-final progress reports per child before it goes quiet. */
 export const DEFAULT_PROGRESS_MAX = 5
-
-/** Channel used when neither progress env switch selects one. */
-export const DEFAULT_PROGRESS_CHANNEL = "chat"
 
 /**
  * System-prompt instruction appended to every child (subagent) session so the
@@ -82,67 +83,6 @@ export const PROGRESS_SYSTEM_INSTRUCTION = [
   "Each `todowrite` update is streamed to the parent as a progress report. Update",
   "the list as you go; never batch every change into a single update at the end.",
 ].join("\n")
-
-/** Values accepted as "enabled" for the opt-in env gate. */
-const TRUTHY = new Set(["1", "true", "yes", "on", "y"])
-
-/** Values accepted as the explicit "toast" mode. */
-const FALSY = new Set(["0", "false", "no", "off", "n"])
-
-/**
- * Resolve the progress delivery mode from `OPENCODE_SUBAGENT_PROGRESS`:
- *
- *   - `"inject"` — truthy value: write the report into the parent session.
- *   - `"toast"`  — `0` / `false` / `no` / `off`: show a transient TUI toast.
- *   - `"off"`    — unset or unrecognized: progress reporting disabled.
- *
- * @returns {"inject" | "toast" | "off"}
- */
-export function progressMode() {
-  const value = String(process.env.OPENCODE_SUBAGENT_PROGRESS ?? "").trim().toLowerCase()
-  if (TRUTHY.has(value)) return "inject"
-  if (FALSY.has(value)) return "toast"
-  return "off"
-}
-
-/**
- * Whether progress reporting is active in any channel. True when the resolved
- * channel is anything other than `off`, so the new
- * `OPENCODE_SUBAGENT_NOTIFICATION_TYPE` switch enables reporting on its own.
- *
- * @returns {boolean}
- */
-export function progressEnabled() {
-  return progressChannel() !== "off"
-}
-
-/** Channels accepted by `OPENCODE_SUBAGENT_NOTIFICATION_TYPE`. */
-const CHANNELS = new Set(["toast", "chat", "inline", "both", "off"])
-
-/**
- * Resolve the delivery channel, orthogonal to whether reporting is enabled.
- *
- * `OPENCODE_SUBAGENT_NOTIFICATION_TYPE` selects the channel directly
- * (`toast` | `chat` | `inline` | `both` | `off`). When it is unset or
- * unrecognized, the legacy `OPENCODE_SUBAGENT_PROGRESS` switch is mapped so
- * existing configurations keep working: truthy → `inline`, `0` → `toast`,
- * unrecognized → `off`. When BOTH switches are unset, the default channel is
- * {@link DEFAULT_PROGRESS_CHANNEL} (`chat`).
- *
- * @returns {"toast" | "chat" | "inline" | "both" | "off"}
- */
-export function progressChannel() {
-  const explicit = String(process.env.OPENCODE_SUBAGENT_NOTIFICATION_TYPE ?? "").trim().toLowerCase()
-  if (CHANNELS.has(explicit)) return explicit
-  const legacy = String(process.env.OPENCODE_SUBAGENT_PROGRESS ?? "").trim().toLowerCase()
-  if (legacy) {
-    const mapped = progressMode()
-    if (mapped === "inject") return "inline"
-    if (mapped === "toast") return "toast"
-    return "off"
-  }
-  return DEFAULT_PROGRESS_CHANNEL
-}
 
 /**
  * Map a legacy `progressMode()` value onto the channel vocabulary.

@@ -7,7 +7,9 @@
   "scripts": {
     "build": "bun run build.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test --preload @opentui/solid/preload"
+    "test": "bun test --preload @opentui/solid/preload",
+    "smoke": "bun scripts/pack-smoke.mjs",
+    "prepublishOnly": "npm run smoke"
   },
   "exports": {
     ".": "./server.js",
@@ -59,8 +61,10 @@
     "@opentui/solid": { "optional": true },
     "solid-js": { "optional": true }
   },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.34"
+  },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.18.34",
     "@opentui/core": "^0.4.5",
     "@opentui/solid": "^0.4.5",
     "@types/bun": "^1.3.0",

@@ -29,23 +29,16 @@
 
 import { tool } from "@opencode-ai/plugin"
 
+// `unwrap`, `resolveTarget`, and `controlEnabled` are dependency-free helpers
+// shared with the core hook and the progress/completion modules. They live in
+// ./subagent-utils.js so importing them never pulls in `@opencode-ai/plugin`;
+// they are re-exported here to keep this module's public surface stable.
+import { resolveTarget, unwrap } from "./subagent-utils.js"
+
+export { controlEnabled, resolveTarget, unwrap } from "./subagent-utils.js"
+
 /** Default maximum characters returned by `subagent_result`. */
 export const DEFAULT_RESULT_CHARS = 20000
-
-/** Values accepted as "enabled" for the opt-in env gate. */
-const TRUTHY = new Set(["1", "true", "yes", "on", "y"])
-
-/**
- * Whether the control tool suite is enabled. True when
- * `OPENCODE_SUBAGENT_CONTROL` is truthy, or when the status tool gate
- * (`OPENCODE_SUBAGENT_STATUS`) is enabled.
- *
- * @returns {boolean}
- */
-export function controlEnabled() {
-  if (TRUTHY.has(String(process.env.OPENCODE_SUBAGENT_STATUS ?? "").trim().toLowerCase())) return true
-  return TRUTHY.has(String(process.env.OPENCODE_SUBAGENT_CONTROL ?? "").trim().toLowerCase())
-}
 
 /**
  * Read a positive integer from an environment variable, falling back when unset
@@ -58,18 +51,6 @@ export function controlEnabled() {
 function envInt(key, fallback) {
   const raw = Number(String(process.env[key] ?? "").trim())
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback
-}
-
-/**
- * Normalize an SDK response into its `data` payload, tolerating clients that
- * return the payload directly (tests) or wrapped as `{ data }` (SDK).
- *
- * @param {unknown} response
- * @returns {unknown}
- */
-export function unwrap(response) {
-  if (response && typeof response === "object" && "data" in response) return response.data
-  return response
 }
 
 /**
@@ -150,36 +131,6 @@ function errorText(error) {
   if (typeof error === "string") return error
   if (error instanceof Error) return error.message
   return String(error?.message ?? error)
-}
-
-/**
- * Resolve the agent and model to preserve when prompting an existing child
- * session. OpenCode's `prompt` endpoint falls back to the *default* agent and
- * its model when `agent`/`model` are omitted, which silently rewrites a child's
- * identity (e.g. a `Frontend` child becomes the default `orchestrator` running
- * on the default model). Reading them back from the child session and passing
- * them through keeps the child on its own agent/model.
- *
- * Accepts either the session model shape (`{ id, providerID, variant }`) or the
- * prompt body shape (`{ modelID, providerID }`). The model `variant` is a
- * sibling identity field (e.g. reasoning effort) and is carried through as the
- * prompt body's top-level `variant` when present and not `"default"`. Returns
- * `{}` when nothing is known so callers can fall back to the default behavior.
- *
- * @param {{ agent?: string, model?: { id?: string, modelID?: string, providerID?: string, variant?: string } } | undefined} session
- * @returns {{ agent?: string, model?: { providerID: string, modelID: string }, variant?: string }}
- */
-export function resolveTarget(session) {
-  const result = {}
-  if (!session || typeof session !== "object") return result
-  if (typeof session.agent === "string" && session.agent) result.agent = session.agent
-  const model = session.model
-  const modelID = model && (typeof model.modelID === "string" ? model.modelID : model.id)
-  if (model && typeof model.providerID === "string" && model.providerID && typeof modelID === "string" && modelID) {
-    result.model = { providerID: model.providerID, modelID }
-    if (typeof model.variant === "string" && model.variant && model.variant !== "default") result.variant = model.variant
-  }
-  return result
 }
 
 /**

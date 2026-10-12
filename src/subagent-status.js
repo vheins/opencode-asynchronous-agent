@@ -20,6 +20,11 @@
 
 import { tool } from "@opencode-ai/plugin"
 
+// The opt-in env gate lives in the dependency-free utils module so the core
+// hook can read it without loading this tool-registering module. Re-exported
+// here to keep this module's public surface stable (tests import it from here).
+export { statusEnabled } from "./subagent-utils.js"
+
 /** Custom tool id exposed to the model. */
 export const STATUS_TOOL_ID = "subagent_status"
 
@@ -28,18 +33,6 @@ export const DEFAULT_STALE_MS = 120000
 
 /** How long (ms) a finished child stays in the registry before being pruned. */
 export const DONE_RETENTION_MS = 3600000
-
-/** Values accepted as "enabled" for the opt-in env gate. */
-const TRUTHY = new Set(["1", "true", "yes", "on", "y"])
-
-/**
- * Whether the opt-in status tool is enabled via `OPENCODE_SUBAGENT_STATUS`.
- *
- * @returns {boolean}
- */
-export function statusEnabled() {
-  return TRUTHY.has(String(process.env.OPENCODE_SUBAGENT_STATUS ?? "").trim().toLowerCase())
-}
 
 /**
  * Configured staleness threshold in milliseconds. Falls back to

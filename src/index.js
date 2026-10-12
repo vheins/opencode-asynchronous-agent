@@ -134,14 +134,41 @@
  * registers everything through the V1 `server` entrypoint.
  */
 
-import { createSubagentStatus, statusEnabled } from "./subagent-status.js"
-import { controlEnabled, createSubagentControl } from "./subagent-control.js"
-import { progressEnabled, createSubagentProgress } from "./subagent-progress.js"
-import { completionEnabled, createSubagentCompletion } from "./subagent-completion.js"
+import {
+  completionEnabled,
+  controlEnabled,
+  progressEnabled,
+  statusEnabled,
+} from "./subagent-utils.js"
 import { cleanupEnabled, createCleanup } from "./cleanup.js"
 
 /** Stable plugin identifier. */
 export const PLUGIN_ID = "opencode-asynchronous-agent"
+
+/**
+ * Load an opt-in feature module on demand, isolating a load failure (for
+ * example a missing optional dependency) to that one feature. The core
+ * background hook must register even when a feature cannot load, so a failed
+ * import logs a warning and disables only that feature instead of failing the
+ * whole plugin entry.
+ *
+ * @template T
+ * @param {string} label
+ * @param {() => Promise<T>} load
+ * @returns {Promise<T | undefined>}
+ */
+async function loadOptionalFeature(label, load) {
+  try {
+    return await load()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    console.error(
+      `[opencode-asynchronous-agent] ${label} is enabled but could not be loaded; ` +
+        `this feature is disabled: ${detail}`,
+    )
+    return undefined
+  }
+}
 
 /** Tool ids that spawn a child subagent session (V1 "task", V2 "subagent"). */
 const SUBAGENT_TOOLS = new Set(["subagent", "task"])
@@ -242,9 +269,19 @@ export async function autoBackgroundPluginV1(ctx) {
   // OPENCODE_AUTO_BG_AGENTS / OPENCODE_AUTO_BG_EXCEPT work on V1.
   const sessionAgents = new Map()
 
+  // Opt-in features are loaded lazily, only when enabled. Each lives in its own
+  // module so a missing optional dependency (e.g. @opencode-ai/plugin) disables
+  // only that feature instead of failing the whole entry — the core
+  // `tool.execute.before` background hook below must always register.
+  //
   // Opt-in status tool. Independent of the background flag: it tracks child
   // sessions from plugin events and reports running/done/error/stale.
-  const status = statusEnabled() ? createSubagentStatus({ client: ctx?.client, directory }) : undefined
+  const status = statusEnabled()
+    ? await loadOptionalFeature("subagent_status tool", async () => {
+        const { createSubagentStatus } = await import("./subagent-status.js")
+        return createSubagentStatus({ client: ctx?.client, directory })
+      })
+    : undefined
 
   // Emulated completion notice for `subagent_send` follow-ups: records the
   // child->parent linkage when a follow-up is queued, then delivers one
@@ -253,15 +290,30 @@ export async function autoBackgroundPluginV1(ctx) {
   // `inline` (waking) and is DECOUPLED from the progress channel; it is
   // independent of the progress feature so setting the completion channel alone
   // still constructs it.
-  const completion = completionEnabled() ? createSubagentCompletion({ client: ctx?.client }) : undefined
+  const completion = completionEnabled()
+    ? await loadOptionalFeature("completion notices", async () => {
+        const { createSubagentCompletion } = await import("./subagent-completion.js")
+        return createSubagentCompletion({ client: ctx?.client })
+      })
+    : undefined
 
   // Opt-in control tools: list/result/cancel/send for background children. The
   // send path arms the completion notice so a follow-up is announced on idle.
-  const control = controlEnabled() ? createSubagentControl({ client: ctx?.client, onSend: completion?.onSend }) : undefined
+  const control = controlEnabled()
+    ? await loadOptionalFeature("subagent control tools", async () => {
+        const { createSubagentControl } = await import("./subagent-control.js")
+        return createSubagentControl({ client: ctx?.client, onSend: completion?.onSend })
+      })
+    : undefined
 
   // Opt-in progress reports: inject coalesced todo-based progress from a child
   // into its parent as the child works (event-driven, never polled).
-  const progress = progressEnabled() ? createSubagentProgress({ client: ctx?.client }) : undefined
+  const progress = progressEnabled()
+    ? await loadOptionalFeature("progress reports", async () => {
+        const { createSubagentProgress } = await import("./subagent-progress.js")
+        return createSubagentProgress({ client: ctx?.client })
+      })
+    : undefined
 
   // Database cleanup (opt-out): caps tool results at write time and prunes
   // old event/part rows on a throttled schedule.

@@ -43,39 +43,11 @@
  * @module subagent-completion
  */
 
-import { resolveTarget, unwrap } from "./subagent-control.js"
+import { completionChannel, resolveTarget, unwrap } from "./subagent-utils.js"
 
-/** Channels accepted by `OPENCODE_SUBAGENT_COMPLETION_NOTIFY`. */
-const COMPLETION_CHANNELS = new Set(["toast", "chat", "inline", "both", "off"])
-
-/** Default completion channel: waking, so the notice is never silenced. */
-const DEFAULT_COMPLETION_CHANNEL = "inline"
-
-/**
- * Resolve the completion-notice channel. `OPENCODE_SUBAGENT_COMPLETION_NOTIFY`
- * selects it directly; when unset or unrecognized it defaults to `inline`
- * (waking) so the subagent -> main-agent completion notification is never
- * silenced by the progress channel.
- *
- * @returns {"toast" | "chat" | "inline" | "both" | "off"}
- */
-export function completionChannel() {
-  const explicit = String(process.env.OPENCODE_SUBAGENT_COMPLETION_NOTIFY ?? "").trim().toLowerCase()
-  if (COMPLETION_CHANNELS.has(explicit)) return explicit
-  return DEFAULT_COMPLETION_CHANNEL
-}
-
-/**
- * Whether the completion notice is active in any channel. True when the
- * resolved channel is anything other than `off`, so
- * `OPENCODE_SUBAGENT_COMPLETION_NOTIFY` enables the feature on its own —
- * independent of the progress gate.
- *
- * @returns {boolean}
- */
-export function completionEnabled() {
-  return completionChannel() !== "off"
-}
+// Re-export the dependency-free env gate/channel resolver so this module's
+// public surface is unchanged (tests import them from here).
+export { completionChannel, completionEnabled } from "./subagent-utils.js"
 
 /**
  * Render the completion notice injected into the parent session.
