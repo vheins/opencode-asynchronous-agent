@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-12
+
+### Fixed
+
+- The `./server` entry now loads from a clean npm install: `@opencode-ai/plugin`
+  is declared as a runtime dependency instead of a dev dependency (#1).
+- The core background hook is decoupled from the opt-in feature modules, so a
+  missing optional dependency degrades only that feature instead of breaking
+  plugin startup (#1).
+
+### Added
+
+- Packaging smoke test (`scripts/pack-smoke.mjs`) that installs the packed
+  tarball into a clean directory and asserts the `./server` entry imports with
+  its `tool.execute.before` hook registered (#1).
+
 ## [0.13.0] - 2026-10-09
 
 ### Added
