@@ -137,6 +137,7 @@
 import {
   completionEnabled,
   controlEnabled,
+  nudgeEnabled,
   progressEnabled,
   statusEnabled,
 } from "./subagent-utils.js"
@@ -274,35 +275,45 @@ export async function autoBackgroundPluginV1(ctx) {
   // only that feature instead of failing the whole entry — the core
   // `tool.execute.before` background hook below must always register.
   //
-  // Opt-in status tool. Independent of the background flag: it tracks child
-  // sessions from plugin events and reports running/done/error/stale.
-  const status = statusEnabled()
-    ? await loadOptionalFeature("subagent_status tool", async () => {
+  // Opt-in status registry: tracks child sessions from plugin events. The nudge
+  // job needs it without the `subagent_status` tool, so the gates are separable:
+  // NUDGE constructs the shared registry, only STATUS registers the tool.
+  const nudgeGate = nudgeEnabled()
+  const statusGate = statusEnabled()
+  const status = statusGate || nudgeGate
+    ? await loadOptionalFeature("subagent status registry", async () => {
         const { createSubagentStatus } = await import("./subagent-status.js")
         return createSubagentStatus({ client: ctx?.client, directory })
       })
     : undefined
 
   // Emulated completion notice for `subagent_send` follow-ups: records the
-  // child->parent linkage when a follow-up is queued, then delivers one
-  // completion notice into the parent on the child's next idle. Gated by its own
-  // channel switch (`OPENCODE_SUBAGENT_COMPLETION_NOTIFY`), which defaults to
-  // `inline` (waking) and is DECOUPLED from the progress channel; it is
-  // independent of the progress feature so setting the completion channel alone
-  // still constructs it.
+  // child->parent linkage when a follow-up is queued, then delivers one notice
+  // into the parent on the child's next idle. Gated by its own channel switch
+  // (`OPENCODE_SUBAGENT_COMPLETION_NOTIFY`, default `inline`/waking), decoupled
+  // from progress. Constructed AFTER `status` because the notice reads the
+  // registry's outcome/duration/tool/token stats; without it the notice renders
+  // from SDK data alone and omits unknown segments.
   const completion = completionEnabled()
     ? await loadOptionalFeature("completion notices", async () => {
         const { createSubagentCompletion } = await import("./subagent-completion.js")
-        return createSubagentCompletion({ client: ctx?.client })
+        return createSubagentCompletion({ client: ctx?.client, registry: status?.registry })
       })
     : undefined
 
-  // Opt-in control tools: list/result/cancel/send for background children. The
-  // send path arms the completion notice so a follow-up is announced on idle.
+  // Opt-in control tools: list/result/cancel/send/watch for background children.
+  // The status registry, when present, is the single source of truth for a
+  // child's liveness (so `subagent_children` / `subagent_send` agree with
+  // `subagent_status`), and enables `subagent_watch`. The send path arms the
+  // completion notice so a follow-up is announced on idle.
   const control = controlEnabled()
     ? await loadOptionalFeature("subagent control tools", async () => {
         const { createSubagentControl } = await import("./subagent-control.js")
-        return createSubagentControl({ client: ctx?.client, onSend: completion?.onSend })
+        return createSubagentControl({
+          client: ctx?.client,
+          registry: status?.registry,
+          onSend: completion?.onSend,
+        })
       })
     : undefined
 
@@ -315,6 +326,20 @@ export async function autoBackgroundPluginV1(ctx) {
       })
     : undefined
 
+  // Opt-in orphan-only resume nudge: after a restart a mid-turn child's process
+  // is dead but its history survives, so a `promptAsync` on it resumes the turn.
+  // Timer-driven (not an event subscriber); reuses the shared registry above.
+  const nudge = nudgeGate
+    ? await loadOptionalFeature("orphan resume nudge", async () => {
+        const { createSubagentNudge } = await import("./subagent-nudge.js")
+        return createSubagentNudge({
+          client: ctx?.client,
+          registry: status?.registry,
+          notify: (message) => console.error(`[opencode-asynchronous-agent] ${message}`),
+        })
+      })
+    : undefined
+
   // Database cleanup (opt-out): caps tool results at write time and prunes
   // old event/part rows on a throttled schedule.
   const cleanup = cleanupEnabled() ? createCleanup() : undefined
@@ -322,15 +347,17 @@ export async function autoBackgroundPluginV1(ctx) {
   if (debugEnabled()) {
     console.error(
       `[opencode-asynchronous-agent] V1 hook active (dir=${directory}, ` +
-        `backgroundSupported=${supported}, statusTool=${Boolean(status)}, ` +
+        `backgroundSupported=${supported}, statusTool=${Boolean(statusGate && status)}, ` +
         `controlTools=${Boolean(control)}, progress=${Boolean(progress)}, ` +
-        `completion=${Boolean(completion)}, cleanup=${Boolean(cleanup)})`,
+        `completion=${Boolean(completion)}, nudge=${Boolean(nudge)}, cleanup=${Boolean(cleanup)})`,
     )
   }
 
   const hooks = {}
 
-  if (status) hooks.tool = status.tool
+  // Only the STATUS gate exposes the tool; the registry itself may exist solely
+  // to serve the nudge job when `OPENCODE_SUBAGENT_STATUS` is off.
+  if (statusGate && status) hooks.tool = status.tool
   if (control) hooks.tool = { ...hooks.tool, ...control.tool }
 
   // Record the agent for each session so the background filter can resolve it
@@ -351,7 +378,7 @@ export async function autoBackgroundPluginV1(ctx) {
     }
   }
 
-  const disposers = [status?.dispose, control?.dispose, progress?.dispose, completion?.dispose, cleanup?.dispose].filter(Boolean)
+  const disposers = [status?.dispose, control?.dispose, progress?.dispose, completion?.dispose, nudge?.dispose, cleanup?.dispose].filter(Boolean)
   if (disposers.length > 0) {
     hooks.dispose = async () => {
       if (walTimer) {
@@ -379,6 +406,12 @@ export async function autoBackgroundPluginV1(ctx) {
     }, cleanup.limits.walCheckMs)
     walTimer.unref?.()
   }
+
+  // Start the orphan resume nudge timer. Unlike the WAL governor it has no
+  // event-driven counterpart: orphan detection is entirely time-based, so this
+  // timer is its only driver. `start()` installs an unref'd interval, which
+  // never holds the process open; `dispose()` (above) clears it.
+  nudge?.start()
 
   // Inject a "keep todowrite current" instruction into child sessions only, so
   // progress reports have an event stream to react to.

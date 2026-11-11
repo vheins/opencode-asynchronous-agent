@@ -52,6 +52,18 @@ export function unwrap(response) {
 }
 
 /**
+ * Read the SDK session namespace off a client, or `undefined` when the client
+ * lacks it. Every tool funnels through this so a partial/mock client degrades
+ * to a readable "unavailable" message instead of throwing.
+ *
+ * @param {object} client
+ * @returns {object | undefined}
+ */
+export function sessionApi(client) {
+  return client && typeof client === "object" ? client.session : undefined
+}
+
+/**
  * Resolve the agent and model to preserve when prompting an existing child
  * session. OpenCode's `prompt` endpoint falls back to the *default* agent and
  * its model when `agent`/`model` are omitted, which silently rewrites a child's
@@ -88,6 +100,19 @@ export function resolveTarget(session) {
  */
 export function statusEnabled() {
   return TRUTHY.has(String(process.env.OPENCODE_SUBAGENT_STATUS ?? "").trim().toLowerCase())
+}
+
+/**
+ * Whether the orphan-only resume nudge is enabled via
+ * `OPENCODE_SUBAGENT_NUDGE`. Lives here (like every other feature gate) so the
+ * core hook can decide whether to lazy-load the nudge module without importing
+ * it first; `subagent-nudge.js` re-exports it to keep that module's public
+ * surface stable.
+ *
+ * @returns {boolean}
+ */
+export function nudgeEnabled() {
+  return TRUTHY.has(String(process.env.OPENCODE_SUBAGENT_NUDGE ?? "").trim().toLowerCase())
 }
 
 /**

@@ -7,19 +7,32 @@
  * SDK (`PluginInput.client`):
  *
  *   - `subagent_children` — list a parent's child sessions
- *   - `subagent_result`   — fetch a child's final assistant answer
+ *   - `subagent_result`   — fetch a child's answer, live activity, or history
  *   - `subagent_cancel`   — abort a running child
- *   - `subagent_send`     — queue extra context into a running child
+ *   - `subagent_send`     — queue extra context into a LIVE child
+ *   - `subagent_watch`    — wait (briefly, bounded) for a child's status/activity
+ *                           to CHANGE
  *
- * There is deliberately no `subagent_wait`: blocking on a child defeats the
- * asynchronous model. OpenCode already pushes a completion notice to the parent
- * when a child finishes, and `subagent_children` / `subagent_result` cover
- * on-demand status. A wait tool is just polling in disguise.
+ * There is deliberately no `subagent_wait`: blocking until a child finishes
+ * defeats the asynchronous model. OpenCode already pushes a completion notice to
+ * the parent when a child finishes. `subagent_watch` only observes a state
+ * transition inside a short hard-capped window.
+ *
+ * When a status registry (`createSubagentStatus`) is supplied, it is the single
+ * source of truth for a child's liveness: the control tools read classified
+ * status from it and fall back to the SDK only for sessions it does not track.
+ * Without a registry the tools still work standalone from the SDK alone.
+ *
+ * The tool suite is assembled from focused modules and this file only wires
+ * them together: `./subagent-children-tool.js` and `./subagent-result-tool.js`
+ * own their tool definitions, `./subagent-rows.js` owns the child-row
+ * projection, and `./subagent-summarize.js` owns the transcript helpers
+ * (`extractResult`, `summarizeActivity`, `summarizeHistory`, `clampText`,
+ * `sliceAfterCursor`). All public exports are re-exported here so this module's
+ * surface stays stable.
  *
  * Every tool is non-destructive, degrades gracefully when an SDK method is
- * unavailable, and is disposed on unload. The pure helpers (`unwrap`,
- * `clampText`, `extractResult`, `pickStatus`, `resolveTarget`) are exported so
- * they can be unit-tested without an OpenCode runtime.
+ * unavailable, and is disposed on unload.
  *
  * Opt-in via `OPENCODE_SUBAGENT_CONTROL=1`; setting `OPENCODE_SUBAGENT_STATUS=1`
  * enables both the status tool and this suite.
@@ -29,16 +42,62 @@
 
 import { tool } from "@opencode-ai/plugin"
 
-// `unwrap`, `resolveTarget`, and `controlEnabled` are dependency-free helpers
-// shared with the core hook and the progress/completion modules. They live in
-// ./subagent-utils.js so importing them never pulls in `@opencode-ai/plugin`;
-// they are re-exported here to keep this module's public surface stable.
-import { resolveTarget, unwrap } from "./subagent-utils.js"
+// `unwrap` and `resolveTarget` are dependency-free helpers shared with the core
+// hook and the progress/completion modules.
+import { resolveTarget, sessionApi, unwrap } from "./subagent-utils.js"
+import { createRowBuilders, errorText } from "./subagent-rows.js"
+import { createChildrenTool } from "./subagent-children-tool.js"
+import { createResultTool } from "./subagent-result-tool.js"
 
 export { controlEnabled, resolveTarget, unwrap } from "./subagent-utils.js"
+export {
+  clampText,
+  extractResult,
+  isAnswerPart,
+  sliceAfterCursor,
+  summarizeActivity,
+  summarizeHistory,
+} from "./subagent-summarize.js"
+export {
+  DEFAULT_CHILDREN_LIMIT,
+  errorText,
+  formatActivity,
+  mapSdkStatus,
+  percentOf,
+  pickStatus,
+} from "./subagent-rows.js"
 
 /** Default maximum characters returned by `subagent_result`. */
 export const DEFAULT_RESULT_CHARS = 20000
+
+/** Default `subagent_watch` window (ms). */
+export const DEFAULT_WATCH_MS = 15000
+
+/** Hard cap for `subagent_watch` (ms), so it can never block for long. */
+export const DEFAULT_WATCH_MAX_MS = 30000
+
+/** Poll interval used by `subagent_watch` (ms). */
+export const WATCH_INTERVAL_MS = 100
+
+/** Statuses that mean the child is no longer safe to prompt. */
+const NON_LIVE = new Set(["done", "error", "stale", "dead"])
+
+/** A stable identity for "status + activity" used by `subagent_watch`. */
+function fingerprint(item) {
+  return item ? `${item.status}:${item.activity}` : "unknown"
+}
+
+/**
+ * Derive an activity label when the registry does not know the child.
+ *
+ * @param {{ inFlight: Array<unknown> }} activity
+ * @param {boolean} streaming
+ * @returns {"tool" | "streaming" | "idle"}
+ */
+function deriveActivity(activity, streaming) {
+  if (activity.inFlight.length > 0) return "tool"
+  return streaming ? "streaming" : "idle"
+}
 
 /**
  * Read a positive integer from an environment variable, falling back when unset
@@ -54,211 +113,81 @@ function envInt(key, fallback) {
 }
 
 /**
- * Clamp a string to `max` characters, appending a marker when truncated.
- *
- * @param {string} text
- * @param {number} max
- * @returns {string}
- */
-export function clampText(text, max) {
-  const value = String(text ?? "")
-  if (!Number.isFinite(max) || max <= 0 || value.length <= max) return value
-  const marker = `\n…[truncated ${value.length - max} chars]`
-  if (marker.length >= max) return value.slice(0, max)
-  return value.slice(0, max - marker.length) + marker
-}
-
-/** Text parts that are real answers, not injected prompts or instructions. */
-function isAnswerPart(part) {
-  return part && part.type === "text" && typeof part.text === "string" && part.synthetic !== true && part.ignored !== true
-}
-
-/**
- * Extract the final assistant answer from a session's message list.
- *
- * Walks messages from newest to oldest and returns the last non-synthetic text
- * part of the newest assistant message. Also surfaces a terminal error and the
- * finish reason when present.
- *
- * @param {Array<{ info?: object, parts?: Array<object> }>} messages
- * @returns {{ text: string, error: unknown, finish: unknown, messageID: string | undefined, found: boolean }}
- */
-export function extractResult(messages) {
-  const list = Array.isArray(messages) ? messages : []
-  for (let i = list.length - 1; i >= 0; i--) {
-    const entry = list[i]
-    const info = entry?.info
-    if (!info || info.role !== "assistant") continue
-    const parts = Array.isArray(entry.parts) ? entry.parts : []
-    const texts = parts.filter(isAnswerPart).map((part) => part.text)
-    return {
-      text: texts.join("\n").trim(),
-      error: info.error,
-      finish: info.finish,
-      messageID: info.id,
-      found: texts.length > 0,
-    }
-  }
-  return { text: "", error: undefined, finish: undefined, messageID: undefined, found: false }
-}
-
-/**
- * Pick the status for a session from a status map, defaulting to idle.
- *
- * @param {Record<string, { type?: string }>} statusMap
- * @param {string} sessionID
- * @returns {{ type: string }}
- */
-export function pickStatus(statusMap, sessionID) {
-  const status = statusMap && typeof statusMap === "object" ? statusMap[sessionID] : undefined
-  return status ?? { type: "idle" }
-}
-
-/**
- * Build the SDK client accessor used by every tool. Returns `undefined` when the
- * client lacks the needed session namespace, so callers can fail gracefully.
- *
- * @param {object} client
- * @returns {object | undefined}
- */
-function sessionApi(client) {
-  return client && typeof client === "object" ? client.session : undefined
-}
-
-/** Render an error thrown by an SDK call into a short string. */
-function errorText(error) {
-  if (!error) return "unknown error"
-  if (typeof error === "string") return error
-  if (error instanceof Error) return error.message
-  return String(error?.message ?? error)
-}
-
-/**
  * Create the control tool suite.
  *
  * @param {{
  *   client?: object,
+ *   registry?: {
+ *     get: (sessionID: string) => object | undefined,
+ *     classify: (sessionID: string) => string | undefined,
+ *     snapshot: (filter?: object) => object[],
+ *   },
  *   resultChars?: number,
  *   onSend?: (parentID: string, childID: string) => void,
+ *   now?: () => number,
+ *   sleep?: (ms: number) => Promise<void>,
+ *   watchMaxMs?: number,
  * }} [options]
  * @returns {{ tool: Record<string, unknown>, dispose: () => Promise<void> }}
  */
 export function createSubagentControl(options = {}) {
   const client = options.client
+  const registry = options.registry
   const resultChars = options.resultChars ?? envInt("OPENCODE_SUBAGENT_RESULT_CHARS", DEFAULT_RESULT_CHARS)
   const onSend = typeof options.onSend === "function" ? options.onSend : undefined
+  const now = typeof options.now === "function" ? options.now : () => Date.now()
+  const sleep =
+    typeof options.sleep === "function" ? options.sleep : (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const watchMaxMs = Number.isFinite(options.watchMaxMs)
+    ? Math.max(0, Math.floor(options.watchMaxMs))
+    : envInt("OPENCODE_SUBAGENT_WATCH_MAX_MS", DEFAULT_WATCH_MAX_MS)
 
-  const childrenTool = tool({
-    description:
-      "List the child (subagent) sessions spawned by a parent session. Use this to " +
-      "discover background subagent session ids before waiting on, reading, or " +
-      "cancelling them. Returns each child's id, title, agent linkage, and " +
-      "current status.",
-    args: {
-      sessionID: tool.schema.string().describe("Parent session id whose children to list."),
-    },
-    async execute(args) {
-      const api = sessionApi(client)
-      if (typeof api?.children !== "function") {
-        return { title: "subagent_children unavailable", output: "subagent_children unavailable: this OpenCode build exposes no session.children SDK method." }
-      }
-      try {
-        const sessions = unwrap(await api.children({ path: { id: args.sessionID } }))
-        const list = Array.isArray(sessions) ? sessions : []
-        const statusMap = await readStatusMap(api)
-        const rows = list.map((info) => ({
-          sessionID: info.id,
-          title: info.title,
-          parentID: info.parentID,
-          directory: info.directory,
-          status: pickStatus(statusMap, info.id).type,
-          updated: info.time?.updated,
-        }))
-        const header = `${rows.length} child session(s) of ${args.sessionID}`
-        const body = rows.map(
-          (row) => `- [${row.status}] ${row.sessionID} · title=${JSON.stringify(row.title ?? "")}`,
-        )
-        return {
-          title: `subagent_children · ${rows.length}`,
-          output: rows.length ? [header, ...body].join("\n") : `${header}.`,
-          metadata: { children: rows },
-        }
-      } catch (error) {
-        return { title: "subagent_children failed", output: `Failed to list children: ${errorText(error)}` }
-      }
-    },
-  })
+  const { sdkRow, registryRow } = createRowBuilders({ registry, now })
 
-  const resultTool = tool({
-    description:
-      "Fetch the final assistant answer of a subagent session. Use after a child " +
-      "finishes (or to inspect partial progress) instead of relying only on the " +
-      "completion notice. Returns the last assistant text, any terminal error, " +
-      "and the finish reason, truncated to a configurable length.",
-    args: {
-      sessionID: tool.schema.string().describe("Subagent session id to read."),
-      maxChars: tool.schema
-        .number()
-        .optional()
-        .describe("Maximum characters of the answer to return (default 20000)."),
-    },
-    async execute(args) {
-      const api = sessionApi(client)
-      if (typeof api?.messages !== "function") {
-        return { title: "subagent_result unavailable", output: "subagent_result unavailable: this OpenCode build exposes no session.messages SDK method." }
-      }
-      try {
-        const messages = unwrap(await api.messages({ path: { id: args.sessionID } }))
-        const result = extractResult(messages)
-        const limit = Number.isFinite(args.maxChars) && args.maxChars > 0 ? Math.floor(args.maxChars) : resultChars
-        if (!result.found && !result.error) {
-          return {
-            title: "subagent_result · empty",
-            output: `No assistant answer found for ${args.sessionID} (the subagent may still be running).`,
-            metadata: { sessionID: args.sessionID, found: false },
-          }
-        }
-        const parts = [clampText(result.text, limit)]
-        if (result.error) parts.push(`[error] ${errorText(result.error)}`)
-        if (result.finish) parts.push(`[finish] ${result.finish}`)
-        return {
-          title: `subagent_result · ${result.found ? "ok" : "error"}`,
-          output: parts.join("\n"),
-          metadata: {
-            sessionID: args.sessionID,
-            messageID: result.messageID,
-            finish: result.finish,
-            error: result.error ?? null,
-            truncated: result.text.length > limit,
-          },
-        }
-      } catch (error) {
-        return { title: "subagent_result failed", output: `Failed to read messages: ${errorText(error)}` }
-      }
-    },
-  })
+  /**
+   * Classified status for a session from the registry, or `undefined` when the
+   * registry does not track it (or no registry was supplied).
+   *
+   * @param {string} sessionID
+   * @returns {{ status: string, item?: object } | undefined}
+   */
+  function lookup(sessionID) {
+    if (!registry || typeof registry.get !== "function") return undefined
+    const item = registry.get(sessionID)
+    if (!item) return undefined
+    return { status: item.status, item }
+  }
+
+  const childrenTool = createChildrenTool({ client, registry, sdkRow, registryRow })
+  const resultTool = createResultTool({ client, resultChars, now, lookup, deriveActivity })
 
   const cancelTool = tool({
     description:
       "Abort a running subagent session. Use to stop a background subagent that is " +
       "no longer needed (for example after another parallel subagent already " +
-      "answered). Returns whether the abort was accepted.",
+      "answered, or one reported dead). Returns whether the abort was accepted.",
     args: {
       sessionID: tool.schema.string().describe("Subagent session id to abort."),
     },
     async execute(args) {
       const api = sessionApi(client)
       if (typeof api?.abort !== "function") {
-        return { title: "subagent_cancel unavailable", output: "subagent_cancel unavailable: this OpenCode build exposes no session.abort SDK method." }
+        return {
+          title: "subagent_cancel unavailable",
+          output: "subagent_cancel unavailable: this OpenCode build exposes no session.abort SDK method.",
+        }
       }
       try {
         const accepted = unwrap(await api.abort({ path: { id: args.sessionID } }))
+        // A void/undefined return from a successful abort is success: only an
+        // explicit `false` means the build refused the request.
+        const ok = accepted !== false
         return {
-          title: `subagent_cancel · ${accepted ? "aborted" : "no-op"}`,
-          output: accepted
+          title: `subagent_cancel · ${ok ? "aborted" : "no-op"}`,
+          output: ok
             ? `Abort requested for ${args.sessionID}.`
             : `No running session to abort for ${args.sessionID}.`,
-          metadata: { sessionID: args.sessionID, accepted: Boolean(accepted) },
+          metadata: { sessionID: args.sessionID, accepted: ok },
         }
       } catch (error) {
         return { title: "subagent_cancel failed", output: `Failed to abort: ${errorText(error)}` }
@@ -270,11 +199,16 @@ export function createSubagentControl(options = {}) {
     description:
       "Send additional context or instructions to a subagent session without " +
       "blocking. Uses the async prompt endpoint, so the parent is not held while " +
-      "the child processes the message. Use to steer a long-running background " +
-      "subagent (for example to narrow scope or supply a missing detail).",
+      "the child processes the message. Refuses to queue into a finished, errored, " +
+      "stale, or dead child (cancel and re-dispatch instead); pass `force: true` to " +
+      "override.",
     args: {
       sessionID: tool.schema.string().describe("Subagent session id to message."),
       prompt: tool.schema.string().describe("Text to queue into the subagent session."),
+      force: tool.schema
+        .boolean()
+        .optional()
+        .describe("Queue even when the child is done/error/stale/dead."),
     },
     async execute(args) {
       const api = sessionApi(client)
@@ -286,6 +220,16 @@ export function createSubagentControl(options = {}) {
       }
       if (!args.prompt) {
         return { title: "subagent_send · empty", output: "No prompt text provided." }
+      }
+      const tracked = lookup(args.sessionID)
+      if (tracked && !args.force && NON_LIVE.has(tracked.status)) {
+        return {
+          title: `subagent_send · refused (${tracked.status})`,
+          output:
+            `${args.sessionID} is ${tracked.status}, so queuing a message would be lost. ` +
+            `Use subagent_cancel to clear it and re-dispatch, or pass force: true to send anyway.`,
+          metadata: { sessionID: args.sessionID, refused: true, status: tracked.status },
+        }
       }
       try {
         // Preserve the child's own agent/model. Without this, OpenCode resolves
@@ -322,25 +266,75 @@ export function createSubagentControl(options = {}) {
     },
   })
 
-  return {
-    tool: {
-      subagent_children: childrenTool,
-      subagent_result: resultTool,
-      subagent_cancel: cancelTool,
-      subagent_send: sendTool,
+  const watchTool = tool({
+    description:
+      "Watch a subagent for a state CHANGE (status or activity), bounded by a short " +
+      "timeout. This is NOT a completion wait: it reads the in-memory status registry " +
+      "and returns as soon as the child's status/activity changes from the baseline, " +
+      "or when the timeout elapses. Never blocks longer than the hard cap " +
+      "(OPENCODE_SUBAGENT_WATCH_MAX_MS, default 30s).",
+    args: {
+      sessionID: tool.schema.string().describe("Subagent session id to watch."),
+      timeoutMs: tool.schema
+        .number()
+        .optional()
+        .describe("How long to wait for a change (default 15000, capped by the hard max)."),
     },
+    async execute(args) {
+      if (!registry || typeof registry.get !== "function") {
+        return {
+          title: "subagent_watch unavailable",
+          output: "subagent_watch unavailable: no status registry is active (enable OPENCODE_SUBAGENT_STATUS).",
+        }
+      }
+      const requested =
+        Number.isFinite(args.timeoutMs) && args.timeoutMs > 0 ? Math.floor(args.timeoutMs) : DEFAULT_WATCH_MS
+      const budget = Math.min(requested, watchMaxMs)
+      const baselineItem = registry.get(args.sessionID)
+      const baseline = fingerprint(baselineItem)
+      const startedAt = now()
+      // Bound the tick count as well as the clock: a fake clock that never
+      // advances must not turn this into an infinite loop.
+      const maxTicks = Math.ceil(budget / WATCH_INTERVAL_MS) + 2
+      let item = baselineItem
+      let changed = false
+      let ticks = 0
+      while (ticks < maxTicks) {
+        ticks += 1
+        item = registry.get(args.sessionID)
+        if (fingerprint(item) !== baseline) {
+          changed = true
+          break
+        }
+        const elapsed = now() - startedAt
+        if (elapsed >= budget) break
+        await sleep(Math.min(WATCH_INTERVAL_MS, budget - elapsed))
+      }
+      const elapsedMs = Math.max(0, now() - startedAt)
+      const status = item?.status ?? "unknown"
+      const activity = item?.activity ?? null
+      const summary = changed
+        ? `${args.sessionID} changed to ${status} (activity=${activity ?? "?"}) after ${elapsedMs}ms.`
+        : `${args.sessionID} unchanged at ${status} (activity=${activity ?? "?"}) after ${elapsedMs}ms; timed out.`
+      return {
+        title: `subagent_watch · ${changed ? "changed" : "timeout"}`,
+        output: summary,
+        metadata: { sessionID: args.sessionID, changed, status, activity, elapsedMs, timedOut: !changed, baseline },
+      }
+    },
+  })
+
+  const tools = {
+    subagent_children: childrenTool,
+    subagent_result: resultTool,
+    subagent_cancel: cancelTool,
+    subagent_send: sendTool,
+  }
+  if (registry) tools.subagent_watch = watchTool
+
+  return {
+    tool: tools,
     dispose: async () => {},
   }
 }
 
-/**
- * Read the SDK session status map, tolerating a missing `status` method.
- *
- * @param {object} api
- * @returns {Promise<Record<string, { type?: string }>>}
- */
-async function readStatusMap(api) {
-  if (typeof api?.status !== "function") return {}
-  const map = unwrap(await api.status())
-  return map && typeof map === "object" ? map : {}
-}
