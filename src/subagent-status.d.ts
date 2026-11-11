@@ -11,7 +11,7 @@ export const DEFAULT_TOOL_GRACE_MS: number
 export const DONE_RETENTION_MS: number
 export const DEFAULT_RECONCILE_MS: number
 
-export type SubagentStatus = "running" | "stale" | "dead" | "done" | "error"
+export type SubagentStatus = "running" | "stale" | "dead" | "done" | "error" | "unknown"
 export type SubagentActivity = "tool" | "streaming" | "idle"
 export type SubagentLifecycleStatus = "running" | "done" | "error"
 
@@ -161,6 +161,7 @@ export function classifyStatus(
   record: {
     status: string
     lastProgressAt?: number
+    startedAt?: number
     lastEventAt?: number
     activeTools?: Map<string, ActiveTool>
   },

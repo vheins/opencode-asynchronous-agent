@@ -26,6 +26,18 @@ test("classifyStatus reads the progress clock, never the event clock", () => {
   )
 })
 
+test("classifyStatus reports unknown when a record has no usable progress clock", () => {
+  // A hand-constructed record (upsert always stamps a clock) has no age to
+  // measure; NaN > threshold is false, so `running` would fabricate freshness
+  // and keep the record out of retention forever.
+  expect(classifyStatus({ status: "running" }, 10_000, 1000, 5000)).toBe("unknown")
+  expect(
+    classifyStatus({ status: "running", lastProgressAt: Number.NaN, startedAt: Number.NaN }, 10_000, 1000, 5000),
+  ).toBe("unknown")
+  // A finite `startedAt` fallback still ages normally.
+  expect(classifyStatus({ status: "running", startedAt: 1000 }, 3000, 1000, 10_000)).toBe("stale")
+})
+
 test("classifyStatus revives a done record once progress advances", () => {
   let clock = 1000
   const feature = createSubagentStatus({ now: () => clock, threshold: () => 1000, deadThreshold: () => 10000 })

@@ -290,13 +290,18 @@ export function progressEvidenceAt(record) {
  * `deadMs <= 0` disables the dead tier, `staleMs <= 0` disables the stale tier,
  * and `toolGraceMs <= 0` disables the tool-call grace window.
  *
+ * A record with no usable progress clock (`lastProgressAt`, then `startedAt`,
+ * both non-finite) has no measurable age. It is reported as `unknown`, never
+ * `running`: `NaN > threshold` is false, so defaulting to `running` would
+ * fabricate freshness and keep the record out of retention forever.
+ *
  * @param {{ status: string, lastProgressAt?: number, lastEventAt?: number,
  *   activeTools?: Map<string, { startedAt: number }> }} record
  * @param {number} now
  * @param {number} staleMs
  * @param {number} [deadMs]
  * @param {number} [toolGraceMs]
- * @returns {"running" | "done" | "error" | "stale" | "dead"}
+ * @returns {"running" | "done" | "error" | "stale" | "dead" | "unknown"}
  */
 export function classifyStatus(record, now, staleMs, deadMs = 0, toolGraceMs = DEFAULT_TOOL_GRACE_MS) {
   if (record.status === "error") return "error"
@@ -305,6 +310,7 @@ export function classifyStatus(record, now, staleMs, deadMs = 0, toolGraceMs = D
   const toolStart = newestToolStart(record)
   if (toolStart !== undefined && toolGraceMs > 0 && now - toolStart <= toolGraceMs) return "running"
   const age = now - progressEvidenceAt(record)
+  if (!Number.isFinite(age)) return "unknown"
   if (deadMs > 0 && age > deadMs) return "dead"
   if (staleMs > 0 && age > staleMs) return "stale"
   return "running"

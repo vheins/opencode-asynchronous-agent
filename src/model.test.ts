@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mainTodoProgress, progressLabel, progressLevel, renderBar, sidebarActivity, subagentTodoProgress } from "./model"
+import { agentStatusCounts, mainTodoProgress, progressLabel, progressLevel, renderBar, sidebarActivity, subagentTodoProgress } from "./model"
 
 function fakeApi(status: { type: string } | undefined, todos: { status: string }[] = []) {
   const part = {
@@ -41,13 +41,23 @@ test("a busy child is listed as Working and active", () => {
 test("an idle child stays visible and is labelled Done", () => {
   const agents = sidebarActivity(fakeApi({ type: "idle" }), "ses_parent").agents
   expect(agents).toHaveLength(1)
-  expect(agents[0]).toMatchObject({ name: "Frontend", label: "Done", active: false })
+  expect(agents[0]).toMatchObject({ name: "Frontend", label: "Done", status: "done", active: false })
+  expect(agentStatusCounts(agents)).toMatchObject({ running: 0, done: 1, unknown: 0, total: 1 })
 })
 
-test("a child with no reported status is treated as done but still listed", () => {
-  const agents = sidebarActivity(fakeApi(undefined), "ses_parent").agents
-  expect(agents).toHaveLength(1)
-  expect(agents[0]).toMatchObject({ name: "Frontend", label: "Done", active: false })
+test("unknown or missing child status is listed as unknown and never counted done", () => {
+  for (const status of [undefined, { type: "unknown" }]) {
+    const agents = sidebarActivity(fakeApi(status), "ses_parent").agents
+    // Still listed: the parent can see the child exists.
+    expect(agents).toHaveLength(1)
+    expect(agents[0]).toMatchObject({ name: "Frontend", label: "Unknown", status: "unknown", active: false })
+    expect(agents[0].label).not.toBe("Done")
+    // An unobserved child must not inflate the done aggregate.
+    const counts = agentStatusCounts(agents)
+    expect(counts.done).toBe(0)
+    expect(counts.unknown).toBe(1)
+    expect(counts.total).toBe(1)
+  }
 })
 
 test("a child's todo progress is surfaced as completed/total", () => {
@@ -179,4 +189,14 @@ test("subagentTodoProgress ignores finished children", () => {
     { active: false, progress: { completed: 9, inProgress: 0, total: 9 } },
   ])
   expect(progress).toEqual({ running: 1, completed: 1, total: 3, fraction: 1 / 3 })
+})
+
+test("subagentTodoProgress skips done children but keeps unknown ones in the total", () => {
+  const progress = subagentTodoProgress([
+    { status: "done", progress: { completed: 9, inProgress: 0, total: 9 } },
+    { status: "unknown", active: false, progress: { completed: 1, inProgress: 0, total: 2 } },
+  ])
+  // Unknown work is not proven finished: dropping it would make the bar read as
+  // more complete than it is.
+  expect(progress).toEqual({ running: 0, completed: 1, total: 2, fraction: 1 / 2 })
 })

@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-11-11
+
+### Fixed
+
+- The TUI sidebar rendered a child whose status was `unknown` (or unreported) as
+  **`done`**, so a live child the registry had not yet observed appeared finished
+  while the `subagent_status` and `subagent_children` tools reported it honestly.
+  `unknown` is now its own distinct state, still listed, and it no longer
+  contributes to completed-child counts or progress fractions.
+- A record with neither `lastProgressAt` nor `startedAt` produced a `NaN` age in
+  `classifyStatus`; because `NaN > threshold` is false it defaulted to `running`
+  and was never retention-swept. A non-finite age is now classified `unknown`
+  rather than `running`, so it can be swept and is not mistaken for live work.
+
 ## [0.14.0] - 2026-11-11
 
 Subagent liveness rework: background children that are dead or stalled are no
@@ -219,7 +233,8 @@ orphaned children can be resumed automatically.
 
 _Releases before 0.10.7 predate this changelog._
 
-[Unreleased]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/vheins/opencode-asynchronous-agent/compare/v0.12.0...v0.13.0

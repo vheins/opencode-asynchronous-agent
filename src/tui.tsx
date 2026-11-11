@@ -3,7 +3,7 @@ import type { ToolPart } from "@opencode-ai/sdk/v2"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack, type Accessor, type JSX } from "solid-js"
 import { humanBytes, readDbSizeBytes } from "./dbsize"
-import { activityDetail, mainTodoProgress, progressLabel, progressLevel, renderBar, sessionMetrics, sidebarActivity, subagentTodoProgress } from "./model"
+import { activityDetail, agentStatusCounts, mainTodoProgress, progressLabel, progressLevel, renderBar, sessionMetrics, sidebarActivity, subagentTodoProgress } from "./model"
 import { elapsedLabel, fetchSubagent } from "./subagent"
 import { inspectWorkspace } from "./workspace"
 
@@ -349,7 +349,7 @@ function useDbSizePoll() {
   })
 }
 
-type SubagentStatus = "running" | "done" | "error"
+type SubagentStatus = "running" | "done" | "error" | "unknown"
 /** Async status kinds sharing one theme-driven color mapping (aggregate line + rows). */
 type StatusKind = "run" | "done" | "err" | "total"
 
@@ -381,33 +381,35 @@ function activityKind(status: string | undefined): StatusKind | undefined {
 }
 
 /**
- * Derives the async-agent aggregate (running/done/error/total). Reconciles the
- * parent session's task/subagent tool parts with the live sidebarActivity agents:
- * a backgrounded subagent's launcher tool completes immediately while its child
- * session keeps working, so it must still count as running. Invariant:
- * running + done + error === total.
+ * Derives the async-agent aggregate (running/done/error/unknown/total).
+ * Reconciles the parent session's task/subagent tool parts with the live
+ * sidebarActivity agents: a backgrounded subagent's launcher tool completes
+ * immediately while its child session keeps working, so it must still count as
+ * running. `unknown` is its own bucket: a child whose status the registry has
+ * not reported is not finished, so it never counts as done. Invariant:
+ * running + done + error + unknown === total.
  */
 function asyncIdentity(api: TuiPluginApi, id: string) {
   const tools = api.state.session.messages(id)
     .flatMap((message) => api.state.part(message.id))
     .filter((part): part is ToolPart => part.type === "tool")
     .filter((part) => part.tool === "task" || part.tool === "subagent")
-  const live = new Set(sidebarActivity(api, id).agents.filter((agent) => agent.active).map((agent) => agent.id))
+  const agents = sidebarActivity(api, id).agents
+  const statusById = new Map(agents.map((agent) => [agent.id, agent.status]))
+  const live = new Set(agents.filter((agent) => agent.active).map((agent) => agent.id))
   const rows: { id: string; status: SubagentStatus }[] = tools.map((part) => {
     const child = part.state.status === "pending" ? undefined : typeof part.state.metadata?.sessionId === "string" ? part.state.metadata.sessionId : undefined
     const key = child ?? part.callID
-    const status: SubagentStatus = live.has(key) || part.state.status === "running" || part.state.status === "pending"
-      ? "running"
-      : part.state.status === "error" ? "error" : "done"
+    const observed = statusById.get(key)
+    const status: SubagentStatus = observed === "unknown" || observed === "done"
+      ? observed
+      : observed === "running" || live.has(key) || part.state.status === "running" || part.state.status === "pending"
+        ? "running"
+        : part.state.status === "error" ? "error" : "done"
     return { id: key, status }
   })
   for (const agent of live) if (!rows.some((row) => row.id === agent)) rows.push({ id: agent, status: "running" })
-  return {
-    running: rows.filter((row) => row.status === "running").length,
-    done: rows.filter((row) => row.status === "done").length,
-    error: rows.filter((row) => row.status === "error").length,
-    total: rows.length,
-  }
+  return agentStatusCounts(rows)
 }
 
 /** Registers the done/error toast for background subagents, gated by env. */
@@ -651,7 +653,7 @@ export function CreatureCard(props: { api: TuiPluginApi; id: string }) {
   </InfoCard>
 }
 
-/** Async-agent aggregate: running/done/err/total. Per-subagent detail lives in SubagentCard. */
+/** Async-agent aggregate: running/done/err/unknown/total. Per-subagent detail lives in SubagentCard. */
 export function AsyncIdentity(props: { api: TuiPluginApi; id: string; compact?: boolean }) {
   const theme = () => props.api.theme.current
   const data = createMemo(() => asyncIdentity(props.api, props.id))
@@ -663,6 +665,10 @@ export function AsyncIdentity(props: { api: TuiPluginApi; id: string; compact?: 
       <span style={{ fg: statusColor(theme(), "done") }}>✓ {data().done} done</span>
       <span style={{ fg: theme().textMuted }}> · </span>
       <span style={{ fg: statusColor(theme(), "err") }}>✕ {data().error} err</span>
+      <Show when={data().unknown > 0}>
+        <span style={{ fg: theme().textMuted }}> · </span>
+        <span style={{ fg: statusColor(theme(), "total") }}>? {data().unknown} unknown</span>
+      </Show>
       <span style={{ fg: theme().textMuted }}> · </span>
       <span style={{ fg: statusColor(theme(), "total") }}>Σ {data().total}</span>
     </text>
@@ -794,7 +800,7 @@ export function ResponsiveDock(props: { api: TuiPluginApi; id: string; sidebarVi
   const segments = (): StatusSegment[] => {
     const list: StatusSegment[] = [
       { text: `Asynchronous Agent · v${__PLUGIN_VERSION__}`, tone: "primary", priority: 0 },
-      { text: ` | ● ${identity().running} run · ✓ ${identity().done} done · ✕ ${identity().error} err · Σ ${identity().total}`, tone: "muted", priority: 0 },
+      { text: ` | ● ${identity().running} run · ✓ ${identity().done} done · ✕ ${identity().error} err${identity().unknown > 0 ? ` · ? ${identity().unknown} unknown` : ""} · Σ ${identity().total}`, tone: "muted", priority: 0 },
       { text: ` | ${mcpPluginLabel(props.api)}`, tone: "muted", priority: 1 },
       { text: ` | DB ${dbSize() ?? "—"}`, tone: "muted", priority: 2 },
     ]

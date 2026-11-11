@@ -59,12 +59,13 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
     const status = child ? api.state.session.status(child) : undefined
     const waiting = child ? api.state.session.permission(child).length + api.state.session.question(child).length : 0
     const launching = tool.state.status === "running" || tool.state.status === "pending"
-    // `session.status()` only carries `busy`/`retry`; a finished child is removed
-    // from that map, so an absent status (or an explicit `idle`) means the child
-    // completed its turn. It is kept visible, labelled "Done", so the parent can
-    // see the subagent still exists and can be messaged again. The label matches
-    // the aggregate, which counts every non-active child as done.
-    const active = waiting > 0 || (status ? status.type !== "idle" : launching)
+    // `session.status()` only carries `busy`/`retry`/`idle`; a finished child is
+    // removed from that map. Absence is therefore ambiguous: the child may have
+    // finished its turn, OR the liveness registry has not observed it yet. It is
+    // never reported as `done` on absence alone — that would show a live,
+    // unobserved child as finished. Only an explicit `idle` (or a completed
+    // non-background tool with no child at all) counts as done.
+    const running = waiting > 0 || status?.type === "busy" || status?.type === "retry" || launching
     const label = waiting
       ? "Waiting for answer"
       : status?.type === "retry"
@@ -73,7 +74,16 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
           ? "Working"
           : launching
             ? "Working"
-            : "Done"
+            : status?.type === "idle"
+              ? "Done"
+              : child
+                ? "Unknown"
+                : "Done"
+    const state: "running" | "done" | "unknown" = running
+      ? "running"
+      : status?.type === "idle" || !child
+        ? "done"
+        : "unknown"
     // The child's own todo list is the most reliable progress signal: it is
     // reactive in the host sync store (keyed by session), so the sidebar can show
     // `completed/total` without fetching the child transcript.
@@ -88,7 +98,8 @@ export function sidebarActivity(api: TuiPluginApi, id: string) {
       id: child ?? tool.callID,
       name: typeof tool.state.input.subagent_type === "string" ? tool.state.input.subagent_type : "subagent",
       label,
-      active,
+      status: state,
+      active: running,
       progress,
       target: activityDetail(tool).target,
     }]
@@ -211,21 +222,45 @@ export function mainTodoProgress(todos: ReadonlyArray<{ status: string }>) {
  * Cumulative subagent todo progress across the children that are still active
  * (running or waiting): completed over the sum of their todos, so the bar
  * reports the same completed/total shape as the main agent. Finished children
- * are excluded so a completed subagent stops inflating the total. `running` is
+ * are excluded so a completed subagent stops inflating the total. `unknown`
+ * children are kept in the sum: they are not proven finished, so dropping their
+ * pending work would make the bar read as more complete than it is. `running` is
  * retained for callers that want the in-progress count.
  *
- * @param {ReadonlyArray<{ active?: boolean, progress?: { completed: number, inProgress: number, total: number } }>} agents
+ * Callers that pass no `status` keep the legacy `active === false` exclusion.
+ *
+ * @param {ReadonlyArray<{ status?: string, active?: boolean, progress?: { completed: number, inProgress: number, total: number } }>} agents
  * @returns {{ running: number, completed: number, total: number, fraction: number }}
  */
-export function subagentTodoProgress(agents: ReadonlyArray<{ active?: boolean, progress?: { completed: number, inProgress: number, total: number } }>) {
+export function subagentTodoProgress(agents: ReadonlyArray<{ status?: string, active?: boolean, progress?: { completed: number, inProgress: number, total: number } }>) {
   let running = 0
   let completed = 0
   let total = 0
   for (const agent of agents) {
-    if (agent.active === false) continue
+    if (agent.status === "done") continue
+    if (agent.status === undefined && agent.active === false) continue
     running += agent.progress?.inProgress ?? 0
     completed += agent.progress?.completed ?? 0
     total += agent.progress?.total ?? 0
   }
   return { running, completed, total, fraction: total > 0 ? completed / total : 0 }
+}
+
+/**
+ * Per-status counts over agent rows. A row without a reported status is counted
+ * as `unknown`, never `done`, so an unobserved child cannot inflate the done
+ * total. `running + done + error + unknown === total`.
+ *
+ * @param {ReadonlyArray<{ status?: string }>} rows
+ * @returns {{ running: number, done: number, error: number, unknown: number, total: number }}
+ */
+export function agentStatusCounts(rows: ReadonlyArray<{ status?: string }>) {
+  const count = (status: string) => rows.filter((row) => (row.status ?? "unknown") === status).length
+  return {
+    running: count("running"),
+    done: count("done"),
+    error: count("error"),
+    unknown: count("unknown"),
+    total: rows.length,
+  }
 }

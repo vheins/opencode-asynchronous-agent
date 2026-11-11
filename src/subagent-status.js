@@ -236,8 +236,13 @@ export function createSubagentStatus(options = {}) {
     for (const [id, record] of records) {
       pruneActiveTools(record, current, graceMs)
       const status = classifyStatus(record, current, staleMs, deadMs, graceMs)
-      const evictable = status === "done" || status === "error" || status === "stale" || status === "dead"
-      if (evictable && current - record.lastProgressAt > keepMs) {
+      // `unknown` is a record with no usable clock (see `classifyStatus`). It has
+      // no retention horizon, so it is swept immediately instead of being kept
+      // forever; the same non-finite-age guard covers any terminal record whose
+      // progress clock was never stamped.
+      const evictable = status === "done" || status === "error" || status === "stale" || status === "dead" || status === "unknown"
+      const age = current - record.lastProgressAt
+      if (evictable && (!Number.isFinite(age) || age > keepMs)) {
         records.delete(id)
         deadConfirmer.forget(id)
       }
